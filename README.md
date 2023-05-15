@@ -3,40 +3,18 @@
 
 ```
 cd <workspace>
-#CONDA: conda create -n intel_dns Python=3.10.6 && conda activate intel_dns
-#VENV: python -m venv venv_intel_dns && source venv_intel_dns/bin/activate
-#optional: conda env config vars set PYTHONNOUSERSITE=1 -n intel_dns # ignore Python packages in ~/.local/lib
 
-#pip install -U pip
-#pip install poetry  #==1.1.13 if on Python 3.8
+#conda (optional): conda create -n intel_dns Python=3.10.6 && conda activate intel_dns
+#venv (optional): python -m venv venv_intel_dns && source venv_intel_dns/bin/activate
 
-#git clone git@github.com:lava-nc/lava.git
-#pushd lava
-#poetry config virtualenvs.in-project true
-#poetry install
-# pytest #optional
-#popd
 wget https://github.com/lava-nc/lava/releases/download/v0.7.0/lava_nc-0.7.0.tar.gz
 pip install lava_nc-0.7.0.tar.gz
 rm lava_nc-0.7.0.tar.gz
 
-#git clone git@github.com:lava-nc/lava-dl.git
-#cd lava-dl
-#poetry config virtualenvs.in-project true
-#poetry install
-# if `poetry install` fails with something like `Updating numpy (1.24.3 -> 1.24.2): Failed`: let it finish other packets and try again
-# if `poetry install` fails with `no module named dulwich`: run `pip install dulwich==0.21.3`
-#pytest
-#popd
 wget https://github.com/lava-nc/lava-dl/releases/download/v0.3.3/lava_dl-0.3.3.tar.gz
 pip install lava_dl-0.3.3.tar.gz
 rm lava_dl-0.3.3.tar.gz
 
-#echo "export PYTHONPATH=<workspace>/lava-dl/src:<workspace>/lava/src:$PYTHONPATH" >> ~/.bashrc
-#source ~/.bashrc
-#CONDA: conda activate intel_dns
-
-#cd <workspace2>
 git clone git@github.com:thebarnable/IntelNeuromorphicDNSChallenge.git
 cd IntelNeuromorphicDNSChallenge
 rm -r microsoft_dns
