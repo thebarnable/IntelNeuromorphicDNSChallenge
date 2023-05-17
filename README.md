@@ -17,9 +17,7 @@ rm lava_dl-0.3.3.tar.gz
 
 git clone git@github.com:thebarnable/IntelNeuromorphicDNSChallenge.git
 cd IntelNeuromorphicDNSChallenge
-rm -r microsoft_dns
-git clone microsoft/DNS-Challenge.git microsoft_dns
-cd microsoft_dns && git checkout 5582dcf && cd ..
+git submodule update --init
 
 pip install -r requirements.txt
 pip install tensorboard
