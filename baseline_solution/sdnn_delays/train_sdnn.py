@@ -200,6 +200,10 @@ if __name__ == '__main__':
                         type=str,
                         default='../../data/MicrosoftDNS_4_ICASSP/',
                         help='dataset path')
+    parser.add_argument('-out',
+                        type=str,
+                        default='runs/',
+                        help='results path')
 
     args = parser.parse_args()
 
@@ -211,7 +215,7 @@ if __name__ == '__main__':
     trained_folder = 'Trained' + identifier
     logs_folder = 'Logs' + identifier
     print(trained_folder)
-    writer = SummaryWriter('runs/' + identifier)
+    writer = SummaryWriter(args.out + identifier)
 
     os.makedirs(trained_folder, exist_ok=True)
     os.makedirs(logs_folder, exist_ok=True)

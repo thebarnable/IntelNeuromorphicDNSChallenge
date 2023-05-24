@@ -25,8 +25,10 @@ pip install tensorboard
 python -c "import os; from distutils.sysconfig import get_python_lib; open(get_python_lib() + os.sep + 'ndns.pth', 'a').write(os.getcwd())"
 
 # start training to check if everything works
-python baseline_solution/sdnn_delays/train_sdnn.py -path /mnt/data4tb/stadtmann/dns_challenge_4/datasets_fullband/
+python baseline_solution/sdnn_delays/train_sdnn.py -path /mnt/data4tb/stadtmann/dns_challenge_4/datasets_fullband/ [-out /mnt/data4tb/stadtmann/dns_challenge_4/tensorboard_logs/<custom-log-dir>/]
 ```
+
+## Introduction
 
 ![solution_structure_2023-01-24](https://user-images.githubusercontent.com/29907126/225791642-b7888797-1202-4141-8580-63cde1278b98.png)
 
