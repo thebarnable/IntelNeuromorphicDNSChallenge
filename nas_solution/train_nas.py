@@ -50,53 +50,41 @@ def stft_mixer(stft_abs, stft_angle, n_fft=512):
 
 
 class Network(torch.nn.Module):
-    def __init__(self, threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0):
+    def __init__(self,k,c,d,  threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0):
         super().__init__()
         self.stft_mean = 0.2
         self.stft_var = 1.5
         self.stft_max = 140
         self.out_delay = out_delay
 
-        # sigma_params = { # sigma-delta neuron parameters
-        #     'threshold'     : threshold,   # delta unit threshold
-        #     'tau_grad'      : tau_grad,    # delta unit surrogate gradient relaxation parameter
-        #     'scale_grad'    : scale_grad,  # delta unit surrogate gradient scale parameter
-        #     'requires_grad' : False,  # trainable threshold
-        #     'shared_param'  : True,   # layer wise threshold
-        # }
-        # sdnn_params = {
-        #     **sigma_params,
-        #     'activation'    : F.relu, # activation function
-        # }
-
-        # self.input_quantizer = lambda x: slayer.utils.quantize(x, step=1 / 64)
-
-        # self.blocks = torch.nn.ModuleList([
-        #     slayer.block.sigma_delta.Input(sdnn_params),
-        #     slayer.block.sigma_delta.Dense(sdnn_params, 257, 512, weight_norm=False, delay=True, delay_shift=True),
-        #     slayer.block.sigma_delta.Dense(sdnn_params, 512, 512, weight_norm=False, delay=True, delay_shift=True),
-        #     slayer.block.sigma_delta.Output(sdnn_params, 512, 257, weight_norm=False),
-        # ])
-
-        # self.blocks[0].pre_hook_fx = self.input_quantizer
-
-        # self.blocks[1].delay.max_delay = max_delay
-        # self.blocks[2].delay.max_delay = max_delay
-
         #unet like architecture
+        # self.blocks = torch.nn.ModuleList([
+        #     torch.nn.Conv1d(257, c, kernel_size=k, padding='same', bias=False),
+        #     torch.nn.BatchNorm1d(c),
+        #     torch.nn.ReLU(inplace=True),
+        #     #torch.nn.MaxPool1d(2)
+        #     torch.nn.Conv1d(c, c, kernel_size=k, padding='same', bias=False),
+        #     torch.nn.BatchNorm1d(c),
+        #     torch.nn.ReLU(inplace=True),
+        #     #torch.nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        #     torch.nn.Conv1d(c, 257, kernel_size=k, padding='same', bias=False),
+        #     torch.nn.BatchNorm1d(257),
+        #     torch.nn.ReLU(inplace=True),
+        # ])
         self.blocks = torch.nn.ModuleList([
-            torch.nn.Conv1d(257, 512, kernel_size=3, padding='same', bias=False),
-            torch.nn.BatchNorm1d(512),
-            torch.nn.ReLU(inplace=True),
-            #torch.nn.MaxPool1d(2)
-            torch.nn.Conv1d(512, 512, kernel_size=3, padding='same', bias=False),
-            torch.nn.BatchNorm1d(512),
-            torch.nn.ReLU(inplace=True),
-            #torch.nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-            torch.nn.Conv1d(512, 257, kernel_size=3, padding='same', bias=False),
-            torch.nn.BatchNorm1d(257),
+            torch.nn.Conv1d(257, c, kernel_size=k, padding='same', bias=False),
+            torch.nn.BatchNorm1d(c),
             torch.nn.ReLU(inplace=True),
         ])
+
+        for ii in range(d):
+            self.blocks.append(torch.nn.Conv1d(c, c, kernel_size=k, padding='same', bias=False))
+            self.blocks.append(torch.nn.BatchNorm1d(c))
+            self.blocks.append(torch.nn.ReLU(inplace=True))
+
+        self.blocks.append(torch.nn.Conv1d(c, 257, kernel_size=k, padding='same', bias=False))
+        self.blocks.append(torch.nn.BatchNorm1d(257))
+        self.blocks.append(torch.nn.ReLU(inplace=True))
 
     def forward(self, noisy):
         # pdb.set_trace()
@@ -105,25 +93,6 @@ class Network(torch.nn.Module):
             x = block(x)
 
         return x
-    
-        # x = noisy - self.stft_mean
-
-        # for block in self.blocks:
-        #     x = block(x)
-
-        # mask = torch.relu(x + 1)
-        # return slayer.axon.delay(noisy, self.out_delay) * mask
-
-    # def grad_flow(self, path):
-    #     # helps monitor the gradient flow
-    #     grad = [b.synapse.grad_norm for b in self.blocks if hasattr(b, 'synapse')]
-
-    #     plt.figure()
-    #     plt.semilogy(grad)
-    #     plt.savefig(path + 'gradFlow.png')
-    #     plt.close()
-
-    #     return grad
 
     def validate_gradients(self):
         valid_gradients = True
@@ -221,7 +190,7 @@ if __name__ == '__main__':
                         help='random seed of the experiment')
     parser.add_argument('-epoch',
                         type=int,
-                        default=50,
+                        default=20,
                         help='number of epochs to run')
     parser.add_argument('-path',
                         type=str,
@@ -244,19 +213,30 @@ if __name__ == '__main__':
     with open(exp_prefix + 'args.txt', 'wt') as f:
         for arg, value in sorted(vars(args).items()):
             f.write('{} : {}\n'.format(arg, value))
+    
+    print(f'##### Start NAS run #####')
 
-    for ii in [1,2,3]:
-        
-        trained_folder = exp_prefix + 'trained_' + str(ii)
-        #logs_folder = exp_prefix + 'logs_' + str(ii)
+    # kernel_sizes = [3,5]
+    # channel_sizes = [32,64,128,256]
+    # nn_depth = [2,3,4,5]
+    kernel_sizes = [5,3]
+    channel_sizes = [256,128,64,32]
+    nn_depth = [5,4,3,2]
+
+    for kk,cc,dd in zip(kernel_sizes,channel_sizes,nn_depth):
+
+        cfg_str = 'k' + str(kk) + 'c' + str(cc) + 'd' + str(dd)
+
+        print(f'##### Start config {cfg_str} #####')
+       
+        trained_folder = exp_prefix + 'trained_' + cfg_str
+        #logs_folder = exp_prefix + 'logs_' + cfg_str
         print(trained_folder)
-        writer = SummaryWriter(tensorboard_path + str(ii) + '/')
-        #os.chmod(tensorboard_path + str(ii) + '/',0o777)
+        writer = SummaryWriter(tensorboard_path + cfg_str + '/')
+        #os.chmod(tensorboard_path + cfg_str + '/',0o777)
 
         os.makedirs(trained_folder, exist_ok=True)
         #os.makedirs(logs_folder, exist_ok=True)
-
-
 
         lam = args.lam
 
@@ -265,20 +245,24 @@ if __name__ == '__main__':
 
         out_delay = args.out_delay
         if len(args.gpu) == 1:
-            net = Network(args.threshold,
+            net = Network(kk,cc,dd,
+                        args.threshold,
                         args.tau_grad,
                         args.scale_grad,
                         args.dmax,
                         args.out_delay).to(device)
             module = net
         else:
-            net = torch.nn.DataParallel(Network(args.threshold,
+            net = torch.nn.DataParallel(Network(kk,cc,dd,
+                                                args.threshold,
                                                 args.tau_grad,
                                                 args.scale_grad,
                                                 args.dmax,
                                                 args.out_delay).to(device),
                                         device_ids=args.gpu)
             module = net.module
+
+        #pdb.set_trace()
 
         # Define optimizer module.
         optimizer = torch.optim.RAdam(net.parameters(),
@@ -356,9 +340,11 @@ if __name__ == '__main__':
                 total = len(train_loader.dataset)
                 time_elapsed = (datetime.now() - t_st).total_seconds()
                 samples_sec = time_elapsed / (i + 1) / train_loader.batch_size
-                header_list = [f'Train: [{processed}/{total} '
-                            f'({100.0 * processed / total:.0f}%)]']
-                stats.print(epoch, i, samples_sec, header=header_list)
+                # header_list = [f'Train: [{processed}/{total} '
+                #             f'({100.0 * processed / total:.0f}%)]']
+                # stats.print(epoch, i, samples_sec, header=header_list)
+
+                #print(f'Epoch: {epoch}, It: {i}, samples_sec: {samples_sec}, loss: {stats.training.loss}, si-snr: {stats.training.accuracy}')
 
             t_st = datetime.now()
             for i, (noisy, clean, noise) in enumerate(validation_loader):
@@ -389,14 +375,18 @@ if __name__ == '__main__':
                     time_elapsed = (datetime.now() - t_st).total_seconds()
                     samples_sec = time_elapsed / \
                         (i + 1) / validation_loader.batch_size
-                    header_list = [f'Valid: [{processed}/{total} '
-                                f'({100.0 * processed / total:.0f}%)]']
-                    stats.print(epoch, i, samples_sec, header=header_list)
+                    # header_list = [f'Valid: [{processed}/{total} '
+                    #             f'({100.0 * processed / total:.0f}%)]']
+                    # stats.print(epoch, i, samples_sec, header=header_list)
+
+                    #print(f'Epoch: {epoch}, It: {i}, samples_sec: {samples_sec}, loss: {stats.validation.loss}, si-snr: {stats.validation.accuracy}')
 
             writer.add_scalar('Loss/train', stats.training.loss, epoch)
             writer.add_scalar('Loss/valid', stats.validation.loss, epoch)
             writer.add_scalar('SI-SNR/train', stats.training.accuracy, epoch)
             writer.add_scalar('SI-SNR/valid', stats.validation.accuracy, epoch)
+
+            print(f'Epoch: {epoch}, loss: {stats.validation.loss}, si-snr: {stats.validation.accuracy}')
 
             stats.update()
             stats.plot(path=trained_folder + '/')
