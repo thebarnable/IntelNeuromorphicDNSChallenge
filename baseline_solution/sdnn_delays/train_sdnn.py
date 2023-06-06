@@ -82,12 +82,13 @@ class Dense(slayer.block.sigma_delta.AbstractSDRelu, slayer.block.base.AbstractD
 
 
 class Network(torch.nn.Module):
-    def __init__(self, threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0):
+    def __init__(self, threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0, binarization=False):
         super().__init__()
         self.stft_mean = 0.2
         self.stft_var = 1.5
         self.stft_max = 140
         self.out_delay = out_delay
+        self.binarization=binarization
 
         sigma_params = { # sigma-delta neuron parameters
             'threshold'     : threshold,   # delta unit threshold
@@ -103,12 +104,20 @@ class Network(torch.nn.Module):
 
         self.input_quantizer = lambda x: slayer.utils.quantize(x, step=1 / 64)
 
-        self.blocks = torch.nn.ModuleList([
-            slayer.block.sigma_delta.Input(sdnn_params),
-            Dense(sdnn_params, 257, 512, weight_norm=False, delay=True, delay_shift=True),
-            Dense(sdnn_params, 512, 512, weight_norm=False, delay=True, delay_shift=True),
-            slayer.block.sigma_delta.Output(sdnn_params, 512, 257, weight_norm=False),
-        ])
+        if self.binarization:
+            self.blocks = torch.nn.ModuleList([
+                slayer.block.sigma_delta.Input(sdnn_params),
+                Dense(sdnn_params, 257, 512, weight_norm=False, delay=True, delay_shift=True),
+                Dense(sdnn_params, 512, 512, weight_norm=False, delay=True, delay_shift=True),
+                slayer.block.sigma_delta.Output(sdnn_params, 512, 257, weight_norm=False),
+            ])
+        else:
+            self.blocks = torch.nn.ModuleList([
+                slayer.block.sigma_delta.Input(sdnn_params),
+                slayer.block.sigma_delta.Dense(sdnn_params, 257, 512, weight_norm=False, delay=True, delay_shift=True),
+                slayer.block.sigma_delta.Dense(sdnn_params, 512, 512, weight_norm=False, delay=True, delay_shift=True),
+                slayer.block.sigma_delta.Output(sdnn_params, 512, 257, weight_norm=False),
+            ])
 
         self.blocks[0].pre_hook_fx = self.input_quantizer
 
@@ -241,6 +250,10 @@ if __name__ == '__main__':
                         type=str,
                         default='runs/',
                         help='results path')
+    parser.add_argument('-binarization',
+                        type=bool,
+                        default=False,
+                        help='apply binarization')
 
     args = parser.parse_args()
 
@@ -272,14 +285,16 @@ if __name__ == '__main__':
                       args.tau_grad,
                       args.scale_grad,
                       args.dmax,
-                      args.out_delay).to(device)
+                      args.out_delay,
+                      args.binarization).to(device)
         module = net
     else:
         net = torch.nn.DataParallel(Network(args.threshold,
                                             args.tau_grad,
                                             args.scale_grad,
                                             args.dmax,
-                                            args.out_delay).to(device),
+                                            args.out_delay,
+                                            args.binarization).to(device),
                                     device_ids=args.gpu)
         module = net.module
 
