@@ -8,6 +8,7 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
+import librosa
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -16,6 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 from lava.lib.dl import slayer
 from audio_dataloader import DNSAudio
 from snr import si_snr
+from dnsmos import DNSMOS
 
 
 def collate_fn(batch):
@@ -137,6 +139,19 @@ def nop_stats(dataloader, stats, sub_stats, print=True):
             if print:
                 stats.print(0, i, samples_sec, header=header_list)
 
+class InferenceNet(Network):
+    def forward(self, noisy):
+        x = noisy - self.stft_mean
+
+        counts = []
+        for block in self.blocks:
+            x = block(x)
+            count = torch.mean((torch.abs(x) > 0).to(x.dtype))
+            counts.append(count.item())
+
+        mask = torch.relu(x + 1)
+        return slayer.axon.delay(noisy, self.out_delay) * mask, torch.tensor(counts)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -237,6 +252,12 @@ if __name__ == '__main__':
                       args.dmax,
                       args.out_delay).to(device)
         module = net
+        netEval = InferenceNet(args.threshold,
+                      args.tau_grad,
+                      args.scale_grad,
+                      args.dmax,
+                      args.out_delay).to(device)
+        moduleEval = netEval
     else:
         net = torch.nn.DataParallel(Network(args.threshold,
                                             args.tau_grad,
@@ -245,6 +266,13 @@ if __name__ == '__main__':
                                             args.out_delay).to(device),
                                     device_ids=args.gpu)
         module = net.module
+        netEval = torch.nn.DataParallel(InferenceNet(args.threshold,
+                                            args.tau_grad,
+                                            args.scale_grad,
+                                            args.dmax,
+                                            args.out_delay).to(device),
+                                    device_ids=args.gpu)
+        moduleEval = netEval.module
 
     # Define optimizer module.
     optimizer = torch.optim.RAdam(net.parameters(),
@@ -278,6 +306,9 @@ if __name__ == '__main__':
 
     stats = slayer.utils.LearningStats(accuracy_str='SI-SNR',
                                        accuracy_unit='dB')
+
+    _, _, _, metadata = train_set[0]
+    dnsmos = DNSMOS()
 
     for epoch in range(args.epoch):
         t_st = datetime.now()
@@ -325,6 +356,12 @@ if __name__ == '__main__':
                            f'({100.0 * processed / total:.0f}%)]']
             stats.print(epoch, i, samples_sec, header=header_list)
 
+        dnsmos_noisy = np.zeros(3)
+        dnsmos_clean = np.zeros(3)
+        dnsmos_noise = np.zeros(3)
+        dnsmos_cleaned  = np.zeros(3)
+        valid_event_counts = []
+
         t_st = datetime.now()
         for i, (noisy, clean, noise) in enumerate(validation_loader):
             net.eval()
@@ -336,15 +373,23 @@ if __name__ == '__main__':
                 noisy_abs, noisy_arg = stft_splitter(noisy, args.n_fft)
                 clean_abs, clean_arg = stft_splitter(clean, args.n_fft)
 
-                denoised_abs = net(noisy_abs)
+                denoised_abs, count = netEval(noisy_abs)
+                valid_event_counts.append(count.cpu().data.numpy())
                 noisy_arg = slayer.axon.delay(noisy_arg, out_delay)
                 clean_abs = slayer.axon.delay(clean_abs, out_delay)
                 clean = slayer.axon.delay(clean, args.n_fft // 4 * out_delay)
+                clean_eval = slayer.axon.delay(clean, args.n_fft * out_delay)
 
                 clean_rec = stft_mixer(denoised_abs, noisy_arg, args.n_fft)
                 
                 score = si_snr(clean_rec, clean)
                 loss = lam * F.mse_loss(denoised_abs, clean_abs) + (100 - torch.mean(score))
+
+                dnsmos_noisy += np.sum(dnsmos(noisy.cpu().data.numpy()), axis=0)
+                dnsmos_clean += np.sum(dnsmos(clean_eval.cpu().data.numpy()), axis=0)
+                dnsmos_noise += np.sum(dnsmos(noise.cpu().data.numpy()), axis=0)
+                dnsmos_cleaned += np.sum(dnsmos(clean_rec.cpu().data.numpy()), axis=0)
+
                 stats.validation.correct_samples += torch.sum(score).item()
                 stats.validation.loss_sum += loss.item()
                 stats.validation.num_samples += noisy.shape[0]
@@ -356,12 +401,113 @@ if __name__ == '__main__':
                     (i + 1) / validation_loader.batch_size
                 header_list = [f'Valid: [{processed}/{total} '
                                f'({100.0 * processed / total:.0f}%)]']
+                header_list.append(f'Event rate: {[c.item() for c in count]}')
                 stats.print(epoch, i, samples_sec, header=header_list)
+
+        # Gather DNSMOS, SI-SNR, SynOPs and NeuronOPs statistics
+        dnsmos_clean /= len(validation_loader.dataset)
+        dnsmos_noisy /= len(validation_loader.dataset)
+        dnsmos_noise /= len(validation_loader.dataset)
+        dnsmos_cleaned /= len(validation_loader.dataset)
+
+        print()
+        print('Avg DNSMOS clean   [ovrl, sig, bak]: ', dnsmos_clean)
+        print('Avg DNSMOS noisy   [ovrl, sig, bak]: ', dnsmos_noisy)
+        print('Avg DNSMOS noise   [ovrl, sig, bak]: ', dnsmos_noise)
+        print('Avg DNSMOS cleaned [ovrl, sig, bak]: ', dnsmos_cleaned)
+
+        mean_events = np.mean(valid_event_counts, axis=0)
+        neuronops = []
+        for block in net.blocks[:-1]:
+            neuronops.append(np.prod(block.neuron.shape))
+        synops = []
+        for events, block in zip(mean_events, net.blocks[1:]):
+            synops.append(events * np.prod(block.synapse.shape))
+        print(f'SynOPS: {synops}')
+        print(f'Total SynOPS: {sum(synops)} per time-step')
+        print(f'Total NeuronOPS: {sum(neuronops)} per time-step')
+        print(f'Time-step per sample: {noisy_abs.shape[-1]}')
+
+        ## Latency
+        win_length = args.n_fft
+        hop_length = args.n_fft // 4
+        # buffer latency
+        dt = hop_length / metadata['fs']
+        buffer_latency = dt
+        print(f'Buffer latency: {buffer_latency * 1000} ms')
+
+        # Encode + Decode latency
+        t_st = datetime.now()
+        for i in range(noisy.shape[0]):
+            audio = noisy[i].cpu().data.numpy()
+            stft = librosa.stft(audio, n_fft=args.n_fft, win_length=win_length, hop_length=hop_length)
+            istft = librosa.istft(stft, n_fft=args.n_fft, win_length=win_length, hop_length=hop_length)
+
+        time_elapsed = (datetime.now() - t_st).total_seconds()
+
+        enc_dec_latency = time_elapsed / noisy.shape[0] / 16000 / 30 * hop_length
+        print(f'STFT + ISTFT latency: {enc_dec_latency * 1000} ms')
+
+        # N-DNS latency
+        dns_delays = []
+        max_len = 50000  # Only evaluate for first clip of audio
+        for i in range(noisy.shape[0]):
+            delay = np.argmax(np.correlate(noisy[i, :max_len].cpu().data.numpy(),
+                                        clean_rec[i, :max_len].cpu().data.numpy(),
+                                        'full')) - max_len + 1
+            dns_delays.append(delay)
+        dns_latency = np.mean(dns_delays) / metadata['fs']
+        print(f'N-DNS latency: {dns_latency * 1000} ms')
+
+        # Audio Quality
+        base_stats = slayer.utils.LearningStats(accuracy_str='SI-SNR',
+                                                accuracy_unit='dB')
+        nop_stats(validation_loader, base_stats, base_stats.validation, print=False)
+
+        si_snr_i = stats.validation.accuracy - base_stats.validation.accuracy
+        print(f'SI-SNR  (validation set): {stats.validation.accuracy: .2f} dB')
+        print(f'SI-SNRi (validation set): {si_snr_i: .2f} dB')
+
+        # Computational Metrics
+        latency = buffer_latency + enc_dec_latency + dns_latency
+        effective_synops_rate = (sum(synops) + 10 * sum(neuronops)) / dt
+        synops_delay_product = effective_synops_rate * latency
+
+        print(f'Solution Latency                 : {latency * 1000: .3f} ms')
+        print(f'Power proxy (Effective SynOPS)   : {effective_synops_rate:.3f} ops/s')
+        print(f'PDP proxy (SynOPS-delay product) : {synops_delay_product: .3f} ops')
 
         writer.add_scalar('Loss/train', stats.training.loss, epoch)
         writer.add_scalar('Loss/valid', stats.validation.loss, epoch)
         writer.add_scalar('SI-SNR/train', stats.training.accuracy, epoch)
         writer.add_scalar('SI-SNR/valid', stats.validation.accuracy, epoch)
+   
+        dnsmos_stats_names = ['ovrl', 'sig', 'bak']
+        dnsmos_clean_writer = {dnsmos_stats_names[i]: dnsmos_clean[i] for i in range(len(dnsmos_stats_names))}
+        writer.add_scalars('Avg DNSMOS clean', dnsmos_clean_writer, epoch)
+        dnsmos_noisy_writer = {dnsmos_stats_names[i]: dnsmos_noisy[i] for i in range(len(dnsmos_stats_names))}
+        writer.add_scalars('Avg DNSMOS clean', dnsmos_noisy_writer, epoch)
+        dnsmos_noise_writer = {dnsmos_stats_names[i]: dnsmos_noise[i] for i in range(len(dnsmos_stats_names))}
+        writer.add_scalars('Avg DNSMOS clean', dnsmos_noise_writer, epoch)
+        dnsmos_cleaned_writer = {dnsmos_stats_names[i]: dnsmos_cleaned[i] for i in range(len(dnsmos_stats_names))}
+        writer.add_scalars('Avg DNSMOS clean', dnsmos_cleaned_writer, epoch)
+        
+        synops_writer = {['_', '_', '_'][i]: dnsmos_cleaned[i] for i in range(len(['_', '_', '_']))}
+        writer.add_scalars('SynOPS', synops_writer, epoch)
+        writer.add_scalar('Total SynOPS (per time-step)', sum(synops), epoch)
+        writer.add_scalar('Total NeuronOPS (per time-step)', sum(neuronops), epoch)
+        writer.add_scalar('Time-step per sample', noisy_abs.shape[-1], epoch)
+
+        writer.add_scalar('Buffer latency (ms)', buffer_latency * 1000, epoch)
+        writer.add_scalar('STFT + ISTFT latency (ms)', enc_dec_latency * 1000, epoch)
+        writer.add_scalar('N-DNS latency (ms)', dns_latency * 1000, epoch)
+
+        writer.add_scalar('SI-SNR (dB)', stats.validation.accuracy, epoch)
+        writer.add_scalar('SI-SNRi (dB)', si_snr_i, epoch)
+
+        writer.add_scalar('solution latency (ms)', latency, epoch)
+        writer.add_scalar('power proxy (Effective SynOPS; ops/s)', effective_synops_rate, epoch)
+        writer.add_scalar('pdp proxy (SynOPS-delay product; ops) ', synops_delay_product, epoch)
 
         stats.update()
         stats.plot(path=trained_folder + '/')
