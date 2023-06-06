@@ -44,6 +44,43 @@ def stft_mixer(stft_abs, stft_angle, n_fft=512):
                         n_fft=n_fft, onesided=True)
 
 
+class DenseQuant(slayer.synapse.layer.Dense):
+    # overwrite Dense layer forward method
+    def forward(self, input):
+        # binarize weights
+        weight_bin = self.weight.clone()
+        weight_bin = weight_bin.add_(1).div_(2).clamp_(0,1)
+        weight_bin.round()
+        weight_bin.mul_(2).add_(-1)
+        if self._pre_hook_fx is None:
+            weight = weight_bin
+        else:
+            weight = self._pre_hook_fx(weight_bin)
+
+        if len(input.shape) == 3:
+            old_shape = input.shape
+            return F.conv3d(  # bias does not need pre_hook_fx. Its disabled
+                input.reshape(old_shape[0], -1, 1, 1, old_shape[-1]),
+                weight, self.bias,
+                self.stride, self.padding, self.dilation, self.groups,
+            ).reshape(old_shape[0], -1, old_shape[-1])
+        else:
+            return F.conv3d(
+                input, weight, self.bias,
+                self.stride, self.padding, self.dilation, self.groups,
+            )
+        
+
+class Dense(slayer.block.sigma_delta.AbstractSDRelu, slayer.block.base.AbstractDense):
+    # overwrite init of original slayer.block.sigma_delta.Dense to use Dense with modified forward method
+    def __init__(self, *args, **kwargs):
+        super(Dense, self).__init__(*args, **kwargs)
+        self.synapse = DenseQuant(**self.synapse_params)
+        if 'pre_hook_fx' not in kwargs.keys():
+            self.synapse.pre_hook_fx = self.neuron.quantize_8bit
+        del self.synapse_params
+
+
 class Network(torch.nn.Module):
     def __init__(self, threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0):
         super().__init__()
@@ -68,8 +105,8 @@ class Network(torch.nn.Module):
 
         self.blocks = torch.nn.ModuleList([
             slayer.block.sigma_delta.Input(sdnn_params),
-            slayer.block.sigma_delta.Dense(sdnn_params, 257, 512, weight_norm=False, delay=True, delay_shift=True),
-            slayer.block.sigma_delta.Dense(sdnn_params, 512, 512, weight_norm=False, delay=True, delay_shift=True),
+            Dense(sdnn_params, 257, 512, weight_norm=False, delay=True, delay_shift=True),
+            Dense(sdnn_params, 512, 512, weight_norm=False, delay=True, delay_shift=True),
             slayer.block.sigma_delta.Output(sdnn_params, 512, 257, weight_norm=False),
         ])
 
@@ -278,7 +315,7 @@ if __name__ == '__main__':
 
     stats = slayer.utils.LearningStats(accuracy_str='SI-SNR',
                                        accuracy_unit='dB')
-
+    
     for epoch in range(args.epoch):
         t_st = datetime.now()
         for i, (noisy, clean, noise) in enumerate(train_loader):
@@ -322,7 +359,7 @@ if __name__ == '__main__':
             time_elapsed = (datetime.now() - t_st).total_seconds()
             samples_sec = time_elapsed / (i + 1) / train_loader.batch_size
             header_list = [f'Train: [{processed}/{total} '
-                           f'({100.0 * processed / total:.0f}%)]']
+                        f'({100.0 * processed / total:.0f}%)]']
             stats.print(epoch, i, samples_sec, header=header_list)
 
         t_st = datetime.now()
