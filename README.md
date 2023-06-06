@@ -7,6 +7,7 @@ cd <workspace>
 #conda (optional): conda create -n intel_dns Python=3.10.6 && conda activate intel_dns
 #venv (optional): python -m venv venv_intel_dns && source venv_intel_dns/bin/activate
 
+# lava + lava-dl
 wget https://github.com/lava-nc/lava/releases/download/v0.7.0/lava_nc-0.7.0.tar.gz
 pip install lava_nc-0.7.0.tar.gz
 rm lava_nc-0.7.0.tar.gz
@@ -15,12 +16,21 @@ wget https://github.com/lava-nc/lava-dl/releases/download/v0.3.3/lava_dl-0.3.3.t
 pip install lava_dl-0.3.3.tar.gz
 rm lava_dl-0.3.3.tar.gz
 
+# requirements for intel challenge
 git clone git@github.com:thebarnable/IntelNeuromorphicDNSChallenge.git
 cd IntelNeuromorphicDNSChallenge
 git submodule update --init
 
 pip install -r requirements.txt
 pip install tensorboard
+
+# rockpool + jax
+pip install --upgrade "jax[cpu]"
+pip install rockpool
+pip install tqdm
+pip install ipython
+pip install ipykernel
+pip install ipywidgets
 
 python -c "import os; from distutils.sysconfig import get_python_lib; open(get_python_lib() + os.sep + 'ndns.pth', 'a').write(os.getcwd())"
 

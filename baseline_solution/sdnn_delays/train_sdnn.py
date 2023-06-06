@@ -17,7 +17,6 @@ from lava.lib.dl import slayer
 from audio_dataloader import DNSAudio
 from snr import si_snr
 
-
 def collate_fn(batch):
     noisy, clean, noise = [], [], []
 
