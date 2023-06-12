@@ -364,7 +364,7 @@ if __name__ == '__main__':
 
         t_st = datetime.now()
         for i, (noisy, clean, noise) in enumerate(validation_loader):
-            net.eval()
+            netEval.eval()
 
             with torch.no_grad():
                 noisy = noisy.to(device)
@@ -441,7 +441,7 @@ if __name__ == '__main__':
         for i in range(noisy.shape[0]):
             audio = noisy[i].cpu().data.numpy()
             stft = librosa.stft(audio, n_fft=args.n_fft, win_length=win_length, hop_length=hop_length)
-            istft = librosa.istft(stft, n_fft=args.n_fft, win_length=win_length, hop_length=hop_length)
+            istft = librosa.istft(stft, win_length=win_length, hop_length=hop_length)
 
         time_elapsed = (datetime.now() - t_st).total_seconds()
 
