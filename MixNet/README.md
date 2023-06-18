@@ -1,6 +1,6 @@
 # MixNet
 
-This is a PyTorch implementation of [Deep speech denoising by ASR-TTS resynthesis](https://github.com/thebarnable/IntelNeuromorphicDNSChallenge/blob/Iason_Hartmann/MixNet/MixNet/Paper.pdf). The corresponding paper is located in the repository. The dataloader and MultiSpeech TTS model was taken from [msalhab96/MultiSpeech](https://github.com/msalhab96/MultiSpeech) but hte TTS model must be trained further. I added the function to synthesize own .wav files with a pretrained model for MultiSpeech TTS. However, the pretrained TTS used for training MixNet is the TTS from [coqui-ai/TTS](https://github.com/coqui-ai/tts). I used GriffinLim as Vocoder. The DNSMOS and SI-SNR functions were taken from the [Intel Neuromorphic DNS Challenge](https://github.com/IntelLabs/IntelNeuromorphicDNSChallenge/tree/main).
+This is a PyTorch implementation of [Deep speech denoising by ASR-TTS resynthesis](https://github.com/thebarnable/IntelNeuromorphicDNSChallenge/blob/Iason_Hartmann/MixNet/MixNet/Paper.pdf). The corresponding paper is located in the repository. The dataloader and MultiSpeech TTS model was taken from [msalhab96/MultiSpeech](https://github.com/msalhab96/MultiSpeech) but this TTS model must be trained further. I added the function to synthesize own .wav files with a pretrained model for MultiSpeech TTS. However, the pretrained TTS used for training MixNet is the TTS from [coqui-ai/TTS](https://github.com/coqui-ai/tts). I used GriffinLim as Vocoder. The DNSMOS and SI-SNR functions were taken from the [Intel Neuromorphic DNS Challenge](https://github.com/IntelLabs/IntelNeuromorphicDNSChallenge/tree/main).
 
 
 # Train on your data
@@ -28,7 +28,7 @@ pip install -r requirements.txt
 * args does pass the data loader arguments to the dataloader (batch size and the paths where the training_data.txt files are stored)
 * hyperparams stores the arguments for training the model and the model itself (number of layers, learning rate, number of neurons, chunk size, number of chunks, etc.).
 * update the args (for the dataloader) and hyperparams (for the model) file if needed
-* train the model 
+* train the model by running train<model>.p, 
 
 # 4. Evaluating
 * update the args (for the dataloader): set batch size to 1
