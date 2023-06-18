@@ -1,0 +1,2 @@
+/home/hartmann/dataset/test-other/533/1066/533-1066-0000.flac|/home/hartmann/dataset/test-other/533/1066/533-1066-0000.flac|WHEN CHURCHYARDS YAWN|2.55
+/home/hartmann/dataset/test-other/533/1066/533-1066-0006.flac|/home/hartmann/dataset/test-other/533/1066/533-1066-0006.flac|I HAVE NONE I SAID HAPPILY|3.79

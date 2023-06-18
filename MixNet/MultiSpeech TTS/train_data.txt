@@ -1,0 +1,1 @@
+/home/hartmann/dataset/train-clean-100/1594/135914/1594-135914-0032.flac|/home/hartmann/dataset/train-clean-100/1594/135914/1594-135914-0032.flac|WHEN SHE HAD DONE SPEAKING|1.73
