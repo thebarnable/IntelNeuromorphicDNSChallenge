@@ -44,7 +44,7 @@ def stft_mixer(stft_abs, stft_angle, n_fft=512):
                         n_fft=n_fft, onesided=True)
 
 
-class DenseQuant(slayer.synapse.layer.Dense):
+class LayerDenseBinary(slayer.synapse.layer.Dense):
     # overwrite Dense layer forward method
     def forward(self, input):
         # binarize weights
@@ -70,25 +70,110 @@ class DenseQuant(slayer.synapse.layer.Dense):
                 self.stride, self.padding, self.dilation, self.groups,
             )
         
+class LayerDenseTernary(slayer.synapse.layer.Dense):
+    # overwrite Dense layer forward method
+    def forward(self, input):
+        # ternarize weights
+        weight_ter = self.weight.clone()
+        thresh = weight_ter.data.abs().sum() / weight_ter.data.numel()
+        thresh *= 0.7
 
-class Dense(slayer.block.sigma_delta.AbstractSDRelu, slayer.block.base.AbstractDense):
+        weight_ter[weight_ter>thresh] = 1
+        weight_ter[weight_ter<-thresh] = -1
+        weight_ter[weight_ter.data.abs()<=thresh] = 0
+
+        if self._pre_hook_fx is None:
+            weight = weight_ter
+        else:
+            weight = self._pre_hook_fx(weight_ter)
+
+        if len(input.shape) == 3:
+            old_shape = input.shape
+            return F.conv3d(  # bias does not need pre_hook_fx. Its disabled
+                input.reshape(old_shape[0], -1, 1, 1, old_shape[-1]),
+                weight, self.bias,
+                self.stride, self.padding, self.dilation, self.groups,
+            ).reshape(old_shape[0], -1, old_shape[-1])
+        else:
+            return F.conv3d(
+                input, weight, self.bias,
+                self.stride, self.padding, self.dilation, self.groups,
+            )
+
+class LayerDenseQuant(slayer.synapse.layer.Dense):
+    def __init__(self, obs,
+        in_neurons, out_neurons,
+        weight_scale=1, weight_norm=False, pre_hook_fx=None):
+        super(LayerDenseQuant, self).__init__(in_neurons, out_neurons, 
+                weight_scale, weight_norm, pre_hook_fx)
+        self.obs = obs
+        
+    # overwrite Dense layer forward method
+    def forward(self, input):
+        # ternarize weights
+        weight_quant = self.weight.clone()
+        _ = self.obs(weight_quant)
+        scale, zero_point = self.obs.calculate_qparams()
+        scale = scale.cuda().type_as(weight_quant)
+        zero_point = zero_point.cuda().type_as(weight_quant)
+        weight_quant = torch.quantize_per_tensor(weight_quant, scale, zero_point)
+
+        if self._pre_hook_fx is None:
+            weight = weight_quant
+        else:
+            weight = self._pre_hook_fx(weight_quant)
+
+        if len(input.shape) == 3:
+            old_shape = input.shape
+            return F.conv3d(  # bias does not need pre_hook_fx. Its disabled
+                input.reshape(old_shape[0], -1, 1, 1, old_shape[-1]),
+                weight, self.bias,
+                self.stride, self.padding, self.dilation, self.groups,
+            ).reshape(old_shape[0], -1, old_shape[-1])
+        else:
+            return F.conv3d(
+                input, weight, self.bias,
+                self.stride, self.padding, self.dilation, self.groups,
+            )
+        
+class DenseBinary(slayer.block.sigma_delta.AbstractSDRelu, slayer.block.base.AbstractDense):
     # overwrite init of original slayer.block.sigma_delta.Dense to use Dense with modified forward method
     def __init__(self, *args, **kwargs):
-        super(Dense, self).__init__(*args, **kwargs)
-        self.synapse = DenseQuant(**self.synapse_params)
+        super(DenseBinary, self).__init__(*args, **kwargs)
+        self.synapse = LayerDenseBinary(**self.synapse_params)
         if 'pre_hook_fx' not in kwargs.keys():
             self.synapse.pre_hook_fx = self.neuron.quantize_8bit
         del self.synapse_params
 
+class DenseTernary(slayer.block.sigma_delta.AbstractSDRelu, slayer.block.base.AbstractDense):
+    # overwrite init of original slayer.block.sigma_delta.Dense to use Dense with modified forward method
+    def __init__(self, *args, **kwargs):
+        super(DenseTernary, self).__init__(*args, **kwargs)
+        self.synapse = LayerDenseTernary(**self.synapse_params)
+        if 'pre_hook_fx' not in kwargs.keys():
+            self.synapse.pre_hook_fx = self.neuron.quantize_8bit
+        del self.synapse_params
+
+class DenseQuant(slayer.block.sigma_delta.AbstractSDRelu, slayer.block.base.AbstractDense):
+    # overwrite init of original slayer.block.sigma_delta.Dense to use Dense with modified forward method
+    def __init__(self, obs, *args, **kwargs):
+        super(DenseQuant, self).__init__(*args, **kwargs)
+        self.synapse = LayerDenseQuant(obs, **self.synapse_params)
+        if 'pre_hook_fx' not in kwargs.keys():
+            self.synapse.pre_hook_fx = self.neuron.quantize_8bit
+        del self.synapse_params
 
 class Network(torch.nn.Module):
-    def __init__(self, threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0, binarization=False):
+    def __init__(self, threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0, binarization=False, ternarization=False, quantization=False, obs=None):
         super().__init__()
         self.stft_mean = 0.2
         self.stft_var = 1.5
         self.stft_max = 140
         self.out_delay = out_delay
         self.binarization=binarization
+        self.ternarization=ternarization
+        self.quantization=quantization
+        self.obs=obs
 
         sigma_params = { # sigma-delta neuron parameters
             'threshold'     : threshold,   # delta unit threshold
@@ -104,11 +189,28 @@ class Network(torch.nn.Module):
 
         self.input_quantizer = lambda x: slayer.utils.quantize(x, step=1 / 64)
 
-        if self.binarization:
+        if self.quantization:
+            print('Network initialization with quantiztion')
             self.blocks = torch.nn.ModuleList([
                 slayer.block.sigma_delta.Input(sdnn_params),
-                Dense(sdnn_params, 257, 512, weight_norm=False, delay=True, delay_shift=True),
-                Dense(sdnn_params, 512, 512, weight_norm=False, delay=True, delay_shift=True),
+                DenseQuant(self.obs, sdnn_params, 257, 512, weight_norm=False, delay=True, delay_shift=True),
+                DenseQuant(self.obs, sdnn_params, 512, 512, weight_norm=False, delay=True, delay_shift=True),
+                slayer.block.sigma_delta.Output(sdnn_params, 512, 257, weight_norm=False),
+            ])
+        elif self.binarization:
+            print('Network initialization with binarization')
+            self.blocks = torch.nn.ModuleList([
+                slayer.block.sigma_delta.Input(sdnn_params),
+                DenseBinary(sdnn_params, 257, 512, weight_norm=False, delay=True, delay_shift=True),
+                DenseBinary(sdnn_params, 512, 512, weight_norm=False, delay=True, delay_shift=True),
+                slayer.block.sigma_delta.Output(sdnn_params, 512, 257, weight_norm=False),
+            ])
+        elif self.ternarization:
+            print('Network initialization with ternarization')
+            self.blocks = torch.nn.ModuleList([
+                slayer.block.sigma_delta.Input(sdnn_params),
+                DenseTernary(sdnn_params, 257, 512, weight_norm=False, delay=True, delay_shift=True),
+                DenseTernary(sdnn_params, 512, 512, weight_norm=False, delay=True, delay_shift=True),
                 slayer.block.sigma_delta.Output(sdnn_params, 512, 257, weight_norm=False),
             ])
         else:
@@ -254,13 +356,25 @@ if __name__ == '__main__':
                         type=bool,
                         default=False,
                         help='apply binarization')
+    parser.add_argument('-ternarization',
+                        type=bool,
+                        default=False,
+                        help='apply ternarization')
+    parser.add_argument('-quantization',
+                        type=bool,
+                        default=False,
+                        help='apply quantization')
+    parser.add_argument('-bits',
+                        type=int,
+                        default=8,
+                        help='quantization bits')
 
     args = parser.parse_args()
 
     identifier = args.exp
     if args.seed is not None:
         torch.manual_seed(args.seed)
-        identifier += '_{}{}'.format(args.optim, args.seed)
+        identifier += '_{}{}'.format(args.seed)
 
     trained_folder = 'Trained' + identifier
     logs_folder = 'Logs' + identifier
@@ -279,6 +393,10 @@ if __name__ == '__main__':
     print('Using GPUs {}'.format(args.gpu))
     device = torch.device('cuda:{}'.format(args.gpu[0]))
 
+    # quantization observer to determine parameters
+    obs = torch.ao.quantization.observer.MinMaxObserver(quant_min=0, quant_max=2**args.bits - 1)
+    obs.to(device=device)
+
     out_delay = args.out_delay
     if len(args.gpu) == 1:
         net = Network(args.threshold,
@@ -286,7 +404,10 @@ if __name__ == '__main__':
                       args.scale_grad,
                       args.dmax,
                       args.out_delay,
-                      args.binarization).to(device)
+                      args.binarization,
+                      args.ternarization,
+                      args.quantization,
+                      obs).to(device)
         module = net
     else:
         net = torch.nn.DataParallel(Network(args.threshold,
@@ -294,7 +415,10 @@ if __name__ == '__main__':
                                             args.scale_grad,
                                             args.dmax,
                                             args.out_delay,
-                                            args.binarization).to(device),
+                                            args.binarization,
+                                            args.ternarization,
+                                            args.quantization,
+                                            obs).to(device),
                                     device_ids=args.gpu)
         module = net.module
 
