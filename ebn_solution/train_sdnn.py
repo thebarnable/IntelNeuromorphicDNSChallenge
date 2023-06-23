@@ -15,7 +15,8 @@ from torch.utils.tensorboard import SummaryWriter
 
 from lava.lib.dl import slayer
 
-# from rockpool.layers.gpl.rate_jax import RecRateEulerJax_IO, H_tanh
+from rockpool.layers.gpl.rate_jax import RecRateEulerJax_IO, H_tanh
+from rockpool import TSContinuous
 
 import sys
 sys.path.insert(1, os.path.join(sys.path[0], '..'))
@@ -48,7 +49,7 @@ def stft_mixer(stft_abs, stft_angle, n_fft=512):
                         n_fft=n_fft, onesided=True)
 
 
-class Network(torch.nn.Module):
+class Baseline(torch.nn.Module):
     def __init__(self, threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0):
         super().__init__()
         self.stft_mean = 0.2
@@ -142,147 +143,41 @@ def nop_stats(dataloader, stats, sub_stats, print=True):
                 stats.print(0, i, samples_sec, header=header_list)
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-gpu',
-                        type=int,
-                        default=[0],
-                        help='which gpu(s) to use', nargs='+')
-    parser.add_argument('-b',
-                        type=int,
-                        default=32,
-                        help='batch size for dataloader')
-    parser.add_argument('-lr',
-                        type=float,
-                        default=0.01,
-                        help='initial learning rate')
-    parser.add_argument('-lam',
-                        type=float,
-                        default=0.001,
-                        help='lagrangian factor')
-    parser.add_argument('-threshold',
-                        type=float,
-                        default=0.1,
-                        help='neuron threshold')
-    parser.add_argument('-tau_grad',
-                        type=float,
-                        default=0.1,
-                        help='surrogate gradient time constant')
-    parser.add_argument('-scale_grad',
-                        type=float,
-                        default=0.8,
-                        help='surrogate gradient scale')
-    parser.add_argument('-n_fft',
-                        type=int,
-                        default=512,
-                        help='number of FFT specturm, hop is n_fft // 4')
-    parser.add_argument('-dmax',
-                        type=int,
-                        default=64,
-                        help='maximum axonal delay')
-    parser.add_argument('-out_delay',
-                        type=int,
-                        default=0,
-                        help='prediction output delay (multiple of 128)')
-    parser.add_argument('-clip',
-                        type=float,
-                        default=10,
-                        help='gradient clipping limit')
-    parser.add_argument('-exp',
-                        type=str,
-                        default='',
-                        help='experiment differentiater string')
-    parser.add_argument('-seed',
-                        type=int,
-                        default=None,
-                        help='random seed of the experiment')
-    parser.add_argument('-epoch',
-                        type=int,
-                        default=50,
-                        help='number of epochs to run')
-    parser.add_argument('-path',
-                        type=str,
-                        default='../../data/MicrosoftDNS_4_ICASSP/',
-                        help='dataset path')
-    parser.add_argument('-out',
-                        type=str,
-                        default='runs/',
-                        help='results path')
-
-    args = parser.parse_args()
-
-    identifier = args.exp
-    if args.seed is not None:
-        torch.manual_seed(args.seed)
-        identifier += '_{}{}'.format(args.optim, args.seed)
-
-    trained_folder = 'Trained' + identifier
-    logs_folder = 'Logs' + identifier
-    print(trained_folder)
-    writer = SummaryWriter(args.out + identifier)
-
-    os.makedirs(trained_folder, exist_ok=True)
-    os.makedirs(logs_folder, exist_ok=True)
-
-    with open(trained_folder + '/args.txt', 'wt') as f:
-        for arg, value in sorted(vars(args).items()):
-            f.write('{} : {}\n'.format(arg, value))
-
-    lam = args.lam
-
-    print('Using GPUs {}'.format(args.gpu))
-    device = torch.device('cuda:{}'.format(args.gpu[0]))
-
-    out_delay = args.out_delay
-    if len(args.gpu) == 1:
-        net = Network(args.threshold,
-                      args.tau_grad,
-                      args.scale_grad,
-                      args.dmax,
-                      args.out_delay).to(device)
-        module = net
+def train_ebn(args):
+    time_base = np.arange(0, 1000, dt)
+    if args.b > 1:
+        batch_axis = 1
     else:
-        net = torch.nn.DataParallel(Network(args.threshold,
-                                            args.tau_grad,
-                                            args.scale_grad,
-                                            args.dmax,
-                                            args.out_delay).to(device),
-                                    device_ids=args.gpu)
-        module = net.module
+        batch_axis = None
 
-    # Define optimizer module.
-    optimizer = torch.optim.RAdam(net.parameters(),
-                                  lr=args.lr,
-                                  weight_decay=1e-5)
+    for epoch in range(args.epoch):
+        t_st = datetime.now()
+        for i, (noisy, clean, noise) in enumerate(train_loader):
+            # transpose from (batch, time) to (time, batch) and to numpy
+            clean = clean.transpose(1,0).cpu().numpy().squeeze()[0:1000]
+            noisy = noisy.transpose(1,0).cpu().numpy().squeeze()[0:1000]
 
-    train_set = DNSAudio(root=args.path + 'training_set/')
-    validation_set = DNSAudio(root=args.path + 'validation_set/')
+            #assert(clean.shape[0] == 480000)
 
-    train_loader = DataLoader(train_set,
-                              batch_size=args.b,
-                              shuffle=True,
-                              collate_fn=collate_fn,
-                              num_workers=4,
-                              pin_memory=True)
-    validation_loader = DataLoader(validation_set,
-                                   batch_size=args.b,
-                                   shuffle=True,
-                                   collate_fn=collate_fn,
-                                   num_workers=4,
-                                   pin_memory=True)
+            clean_ts = TSContinuous(time_base, clean)
+            noisy_ts = TSContinuous(time_base, noisy)
 
-    base_stats = slayer.utils.LearningStats(accuracy_str='SI-SNR',
-                                            accuracy_unit='dB')
+            net.reset_time()
+            l_fcn, g_fcn, o_fcn = net.train_output_target(noisy_ts,
+                                                        clean_ts,
+                                                        is_first = (i == 0) and (epoch == 0),
+                                                        opt_params={"step_size": 1e-4},
+                                                        batch_axis = batch_axis,
+                                                        debug_nans = True)
 
-    # print()
-    # print('Base Statistics')
-    # nop_stats(train_loader, base_stats, base_stats.training)
-    # nop_stats(validation_loader, base_stats, base_stats.validation)
-    # print()
+            denoised = net.evolve(noisy_ts)
+            score = si_snr(denoised.samples, clean)
+            print("SI-SNR ", score)
 
-    stats = slayer.utils.LearningStats(accuracy_str='SI-SNR',
-                                       accuracy_unit='dB')
+    net.reset_all()
+    net.noise_std = 0.0
 
+def train_baseline(args):
     for epoch in range(args.epoch):
         t_st = datetime.now()
         for i, (noisy, clean, noise) in enumerate(train_loader):
@@ -382,3 +277,172 @@ if __name__ == '__main__':
     writer.add_hparams(params_dict, {'SI-SNR': stats.validation.max_accuracy})
     writer.flush()
     writer.close()
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-baseline',
+                        action='store_true',
+                        help='use baseline instead of EBN')
+    parser.add_argument('-neurons',
+                        type=int,
+                        default=64,
+                        help='neurons in non-spiking teacher reservoir')
+    parser.add_argument('-gpu',
+                        type=int,
+                        default=[0],
+                        help='which gpu(s) to use', nargs='+')
+    parser.add_argument('-b',
+                        type=int,
+                        default=32,
+                        help='batch size for dataloader')
+    parser.add_argument('-lr',
+                        type=float,
+                        default=0.01,
+                        help='initial learning rate')
+    parser.add_argument('-lam',
+                        type=float,
+                        default=0.001,
+                        help='lagrangian factor')
+    parser.add_argument('-threshold',
+                        type=float,
+                        default=0.1,
+                        help='neuron threshold')
+    parser.add_argument('-tau_grad',
+                        type=float,
+                        default=0.1,
+                        help='surrogate gradient time constant')
+    parser.add_argument('-scale_grad',
+                        type=float,
+                        default=0.8,
+                        help='surrogate gradient scale')
+    parser.add_argument('-n_fft',
+                        type=int,
+                        default=512,
+                        help='number of FFT specturm, hop is n_fft // 4')
+    parser.add_argument('-dmax',
+                        type=int,
+                        default=64,
+                        help='maximum axonal delay')
+    parser.add_argument('-out_delay',
+                        type=int,
+                        default=0,
+                        help='prediction output delay (multiple of 128)')
+    parser.add_argument('-clip',
+                        type=float,
+                        default=10,
+                        help='gradient clipping limit')
+    parser.add_argument('-exp',
+                        type=str,
+                        default='',
+                        help='experiment differentiater string')
+    parser.add_argument('-seed',
+                        type=int,
+                        default=None,
+                        help='random seed of the experiment')
+    parser.add_argument('-epoch',
+                        type=int,
+                        default=50,
+                        help='number of epochs to run')
+    parser.add_argument('-path',
+                        type=str,
+                        default='../../data/MicrosoftDNS_4_ICASSP/',
+                        help='dataset path')
+    parser.add_argument('-out',
+                        type=str,
+                        default='runs/',
+                        help='results path')
+
+    args = parser.parse_args()
+
+    identifier = args.exp
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
+        identifier += '_{}{}'.format(args.optim, args.seed)
+
+    trained_folder = 'Trained' + identifier
+    logs_folder = 'Logs' + identifier
+    print(trained_folder)
+    writer = SummaryWriter(args.out + identifier)
+
+    os.makedirs(trained_folder, exist_ok=True)
+    os.makedirs(logs_folder, exist_ok=True)
+
+    with open(trained_folder + '/args.txt', 'wt') as f:
+        for arg, value in sorted(vars(args).items()):
+            f.write('{} : {}\n'.format(arg, value))
+
+    lam = args.lam
+
+    print('Using GPUs {}'.format(args.gpu))
+    device = torch.device('cuda:{}'.format(args.gpu[0]))
+
+    out_delay = args.out_delay
+    if args.baseline:
+        net = Baseline(args.threshold,
+                      args.tau_grad,
+                      args.scale_grad,
+                      args.dmax,
+                      args.out_delay).to(device)
+        
+        optimizer = torch.optim.RAdam(net.parameters(),
+                                lr=args.lr,
+                                weight_decay=1e-5)
+    else:
+        w_in = 10.0 * (np.random.rand(args.b, args.neurons) - .5)
+        w_rec = 0.2 * (np.random.rand(args.neurons, args.neurons) - .5)
+        w_rec -= np.eye(args.neurons) * w_rec
+        w_out = 0.4*np.random.uniform(size=(args.neurons, args.b))-0.2
+        bias = 0.0 * (np.random.rand(args.neurons) - 0.5)
+        tau = np.linspace(0.01, 0.1, args.neurons)
+        sr = np.max(np.abs(np.linalg.eigvals(w_rec)))
+        w_rec = w_rec / sr * 0.95
+        dt=1#1e-3
+
+        net = RecRateEulerJax_IO(activation_func=H_tanh,
+                                    w_in=w_in,
+                                    w_recurrent=w_rec,
+                                    w_out=w_out,
+                                    tau=tau,
+                                    bias=bias,
+                                    dt=dt,
+                                    noise_std=0.0,
+                                    name="hidden")
+
+    if len(args.gpu) == 1:
+        module = net
+    else:
+        net = torch.nn.DataParallel(net, device_ids=args.gpu)
+        module = net.module
+
+    train_set = DNSAudio(root=args.path + 'training_set/')
+    validation_set = DNSAudio(root=args.path + 'validation_set/')
+
+    train_loader = DataLoader(train_set,
+                              batch_size=args.b,
+                              shuffle=True,
+                              collate_fn=collate_fn,
+                              num_workers=4,
+                              pin_memory=True)
+    validation_loader = DataLoader(validation_set,
+                                   batch_size=args.b,
+                                   shuffle=True,
+                                   collate_fn=collate_fn,
+                                   num_workers=4,
+                                   pin_memory=True)
+
+    base_stats = slayer.utils.LearningStats(accuracy_str='SI-SNR',
+                                            accuracy_unit='dB')
+
+    # print()
+    # print('Base Statistics')
+    # nop_stats(train_loader, base_stats, base_stats.training)
+    # nop_stats(validation_loader, base_stats, base_stats.validation)
+    # print()
+
+    stats = slayer.utils.LearningStats(accuracy_str='SI-SNR',
+                                       accuracy_unit='dB')
+
+    if args.baseline:
+        train_baseline(args)
+    else:
+        train_ebn(args)
