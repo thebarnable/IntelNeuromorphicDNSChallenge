@@ -6,7 +6,9 @@ import os
 import h5py
 import argparse
 import numpy as np
+from jax import jit
 from jax import numpy as jnp
+import jax.example_libraries.optimizers as jopt
 import matplotlib.pyplot as plt
 from datetime import datetime
 import time
@@ -29,6 +31,7 @@ sys.path.insert(1, os.path.join(sys.path[0], '..'))
 from audio_dataloader import DNSAudio
 from snr import si_snr
 
+# Helper functions
 def collate_fn(batch):
     noisy, clean, noise = [], [], []
 
@@ -38,7 +41,6 @@ def collate_fn(batch):
         noise += [torch.FloatTensor(sample[2])]
 
     return torch.stack(noisy), torch.stack(clean), torch.stack(noise)
-
 
 def stft_splitter(audio, n_fft=512):
     with torch.no_grad():
@@ -53,28 +55,6 @@ def stft_mixer(stft_abs, stft_angle, n_fft=512):
     return torch.istft(torch.complex(stft_abs * torch.cos(stft_angle),
                                         stft_abs * torch.sin(stft_angle)),
                         n_fft=n_fft, onesided=True)
-
-# Create some helper functions
-# Moving average for smoothing the response
-def filter_1d(data, alpha = 0.9):
-    last = data[0]
-    out = np.zeros((len(data),))
-    out[0] = last
-    for i in range(1,len(data)):
-        out[i] = alpha*out[i-1] + (1-alpha)*data[i]
-        last = data[i]
-    return out
-
-# Create some helper functions
-# Moving average for smoothing the response
-def filter_1d(data, alpha = 0.9):
-    last = data[0]
-    out = np.zeros((len(data),))
-    out[0] = last
-    for i in range(1,len(data)):
-        out[i] = alpha*out[i-1] + (1-alpha)*data[i]
-        last = data[i]
-    return out
 
 def generate_xor_sample(total_duration, dt, amplitude=1, use_smooth=True, plot=False):
     """
@@ -140,23 +120,42 @@ def generate_xor_sample(total_duration, dt, amplitude=1, use_smooth=True, plot=F
         plt.show()
     return (data[:int(total_duration/dt)], target[:int(total_duration/dt)], input_label)
 
-def k_step_function(total_num_iter, step_size, start_k):
-    stop_k = step_size
-    num_reductions = int((start_k - stop_k) / step_size) + 1
-    reduce_after = int(total_num_iter / num_reductions)
-    reduction_indices = [i for i in range(1,total_num_iter) if (i % reduce_after) == 0]
-    k_of_t = np.zeros(total_num_iter)
-    if(total_num_iter > 0):
-        k_of_t[0] = start_k
-        for t in range(1,total_num_iter):
-            if(t in reduction_indices):
-                k_of_t[t] = k_of_t[t-1]-step_size
-            else:
-                k_of_t[t] = k_of_t[t-1]
+# Loss functions
+## imports
+from typing import (
+    Dict,
+    Tuple,
+    Any,
+    Callable,
+    Union,
+    List,
+    Optional,
+    Collection,
+    Iterable,
+)
+State = Any
+Params = Union[Dict, Tuple, List]
 
-    return k_of_t
+## functions
+@jit
+def loss_mse_reg_default( # Default helper from Rockpool for reservoir nets
+    params: Params,                     # Set of packed parameters
+    states_t: Dict[str, jnp.ndarray],    # Set of packed state values
+    output_batch_t: jnp.ndarray,         # Output rasterised time series [TxO]
+    target_batch_t: jnp.ndarray,         # Target rasterised time series [TxO]
+    min_tau: float,                     # Minimum time constant
+    lambda_mse: float = 1.0,            # Factor when combining loss, on mean-squared error term
+    reg_tau: float = 10000.0,           # Factor when combining loss, on minimum time constant limit
+    reg_l2_rec: float = 1.0,            # Factor when combining loss, on L2-norm term of recurrent weights
+) -> float:
+    mse = lambda_mse * jnp.nanmean((output_batch_t - target_batch_t) ** 2)  # output-target MSE loss
+    tau_loss = reg_tau * jnp.nanmean(jnp.where(params["tau"] < min_tau, np.exp(-(params["tau"] - min_tau)), 0))  # punish tau < min_tau
+    w_res_norm = reg_l2_rec * jnp.nanmean(params["w_recurrent"] ** 2)  # punish large w_rec
+    return mse + w_res_norm + tau_loss
 
+loss_mse_reg_default_params = {"lambda_mse": 1.0, "reg_tau": 10000.0, "reg_l2_rec": 1.0, "min_tau": 1e-3 * 11}
 
+# Networks
 
 class Baseline(torch.nn.Module):
     def __init__(self, threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0):
@@ -230,28 +229,7 @@ class Baseline(torch.nn.Module):
         for i, b in enumerate(self.blocks):
             b.export_hdf5(layer.create_group(f'{i}'))
 
-        
-def nop_stats(dataloader, stats, sub_stats, print=True):
-    t_st = datetime.now()
-    for i, (noisy, clean, noise) in enumerate(dataloader):
-        with torch.no_grad():
-            noisy = noisy
-            clean = clean
-
-            score = si_snr(noisy, clean)
-            sub_stats.correct_samples += torch.sum(score).item()
-            sub_stats.num_samples += noisy.shape[0]
-
-            processed = i * dataloader.batch_size
-            total = len(dataloader.dataset)
-            time_elapsed = (datetime.now() - t_st).total_seconds()
-            samples_sec = time_elapsed / (i + 1) / dataloader.batch_size
-            header_list = [f'Train: [{processed}/{total} '
-                           f'({100.0 * processed / total:.0f}%)]']
-            if print:
-                stats.print(0, i, samples_sec, header=header_list)
-
-
+# Training
 def train_ebn(args):
     if args.b > 1:
         batch_axis = 0
@@ -261,34 +239,35 @@ def train_ebn(args):
     for epoch in range(args.epoch):
         t_st = datetime.now()
         for i, (noisy, clean, noise) in enumerate(train_loader):
+            # noisy = clean + noise   [args.b x 480000]
             t_start = time.time()
 
             if clean.shape[0] != args.b:  # last batch might not be full, Rockpool cant handle that -> skip last batch
                 print("Skipping batch %d" % i)
                 continue
 
-            # transpose from (batch, time) to (time, batch) and to numpy
-            clean = clean.transpose(1,0).squeeze()  # .cpu().numpy()
+            # transpose from [batch x time] to [time x batch]
+            clean = clean.transpose(1,0).squeeze()
             noisy = noisy.transpose(1,0).squeeze()
 
-            #assert(clean.shape[1] == 480000)
+            # use helper class for sampling from time series
             time_base = np.arange(0, clean.shape[0]/1000, dt) # Rockpool can't handle dt = 1.0 -> set dt = 1e3 and normalize signal duration to that
 
             clean_ts = TSContinuous(time_base, clean)
             noisy_ts = TSContinuous(time_base, noisy)
 
-            # time_base = np.arange(0, 1.0, 1e-3)
-            # xor_data, xor_target, _ = generate_xor_sample(total_duration=1.0, dt=1e-3, amplitude=1.0)
-            # xor_data_ts = TSContinuous(time_base, xor_data)
-            # xor_target_ts = TSContinuous(time_base, xor_target)
-
+            # perform one optimization iteration (evolve net with inputs + calc loss (avg over batch) + calc gradients (BPTT) + update weights)
             net.reset_time()
             loss, gradients, output_fct = net.train_output_target(noisy_ts,
                                                         clean_ts,
                                                         is_first = (i == 0) and (epoch == 0),
-                                                        opt_params={"step_size": 1e-4},
-                                                        batch_axis = batch_axis)
+                                                        batch_axis = batch_axis,
+                                                        loss_fcn = loss_mse_reg_default,
+                                                        loss_params = loss_mse_reg_default_params,
+                                                        optimizer = jopt.adam,
+                                                        opt_params = {"step_size": 1e-4})
 
+            # evolve net with inputs again to perform inference (TODO: why do again? no performance impact apparently)
             denoised = net.evolve(noisy_ts)
             if batch_axis is not None:
                 snr_score = si_snr(denoised.samples[:,0].squeeze(), clean[:,0])
@@ -623,15 +602,6 @@ if __name__ == '__main__':
                                    collate_fn=collate_fn,
                                    num_workers=4,
                                    pin_memory=True)
-
-    base_stats = slayer.utils.LearningStats(accuracy_str='SI-SNR',
-                                            accuracy_unit='dB')
-
-    # print()
-    # print('Base Statistics')
-    # nop_stats(train_loader, base_stats, base_stats.training)
-    # nop_stats(validation_loader, base_stats, base_stats.validation)
-    # print()
 
     stats = slayer.utils.LearningStats(accuracy_str='SI-SNR',
                                        accuracy_unit='dB')
