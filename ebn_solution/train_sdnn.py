@@ -6,8 +6,10 @@ import os
 import h5py
 import argparse
 import numpy as np
+from jax import numpy as jnp
 import matplotlib.pyplot as plt
 from datetime import datetime
+import time
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -15,7 +17,11 @@ from torch.utils.tensorboard import SummaryWriter
 
 from lava.lib.dl import slayer
 
+import jax
+jax.config.update('jax_platform_name', 'cpu')
+
 from rockpool.layers.gpl.rate_jax import RecRateEulerJax_IO, H_tanh
+from rockpool.layers.training.gpl.jax_trainer import loss_mse_reg
 from rockpool import TSContinuous
 
 import sys
@@ -47,6 +53,109 @@ def stft_mixer(stft_abs, stft_angle, n_fft=512):
     return torch.istft(torch.complex(stft_abs * torch.cos(stft_angle),
                                         stft_abs * torch.sin(stft_angle)),
                         n_fft=n_fft, onesided=True)
+
+# Create some helper functions
+# Moving average for smoothing the response
+def filter_1d(data, alpha = 0.9):
+    last = data[0]
+    out = np.zeros((len(data),))
+    out[0] = last
+    for i in range(1,len(data)):
+        out[i] = alpha*out[i-1] + (1-alpha)*data[i]
+        last = data[i]
+    return out
+
+# Create some helper functions
+# Moving average for smoothing the response
+def filter_1d(data, alpha = 0.9):
+    last = data[0]
+    out = np.zeros((len(data),))
+    out[0] = last
+    for i in range(1,len(data)):
+        out[i] = alpha*out[i-1] + (1-alpha)*data[i]
+        last = data[i]
+    return out
+
+def generate_xor_sample(total_duration, dt, amplitude=1, use_smooth=True, plot=False):
+    """
+    Generates a temporal XOR signal
+    """
+    input_duration = 2/3*total_duration
+    # Create a time base
+    t = np.linspace(0,total_duration, int(total_duration/dt)+1)
+    first_duration = np.random.uniform(low=input_duration/10, high=input_duration/4 )
+    second_duration = np.random.uniform(low=input_duration/10, high=input_duration/4 )
+    end_first = np.random.uniform(low=first_duration, high=2/3*input_duration-second_duration)
+    start_first = end_first - first_duration
+    start_second = np.random.uniform(low=end_first + 0.1, high=2/3*input_duration-second_duration) # At least 200 ms break
+    end_second = start_second+second_duration
+    data = np.zeros(int(total_duration/dt)+1)
+    i1 = np.random.rand() > 0.5
+    i2 = np.random.rand() > 0.5
+    response = (((not i1) and i2) or (i1 and (not i2)))
+    if(i1):
+        a1 = 1
+    else:
+        a1 = -1
+    if(i2):
+        a2 = 1
+    else:
+        a2 = -1
+    input_label = 0
+    if(a1==1 and a2==1):
+        input_label = 0
+    elif(a1==1 and a2==-1):
+        input_label = 1
+    elif(a1==-1 and a2==1):
+        input_label = 2
+    else:
+        input_label = 3
+    data[(start_first <= t) & (t < end_first)] = a1
+    data[(start_second <= t) & (t < end_second)] = a2
+    if(use_smooth):
+        sigma = 10
+        w = (1/(sigma*np.sqrt(2*np.pi)))* np.exp(-((np.linspace(1,1000,int(1/dt))-500)**2)/(2*sigma**2))
+        w = w / np.sum(w)
+        data = amplitude*np.convolve(data, w, "same")
+    else:
+        data *= amplitude
+    target = np.zeros(int(total_duration/dt)+1)
+    if(response):
+        ar = 1.0
+    else:
+        ar = -1.0
+    target[int(1/dt*(end_second+0.05)):int(1/dt*(end_second))+int(1/dt*0.3)] = ar
+    sigma = 20
+    w = (1/(sigma*np.sqrt(2*np.pi)))* np.exp(-((np.linspace(1,1000,int(1/dt))-500)**2)/(2*sigma**2))
+    w = w / np.sum(w)
+    target = np.convolve(target, w, "same")
+    target /= np.max(np.abs(target))
+    if(plot):
+        eps = 0.05
+        plt.subplot(211)
+        plt.plot(t, data)
+        plt.ylim([-amplitude-eps, amplitude+eps])
+        plt.subplot(212)
+        plt.plot(t, target)
+        plt.show()
+    return (data[:int(total_duration/dt)], target[:int(total_duration/dt)], input_label)
+
+def k_step_function(total_num_iter, step_size, start_k):
+    stop_k = step_size
+    num_reductions = int((start_k - stop_k) / step_size) + 1
+    reduce_after = int(total_num_iter / num_reductions)
+    reduction_indices = [i for i in range(1,total_num_iter) if (i % reduce_after) == 0]
+    k_of_t = np.zeros(total_num_iter)
+    if(total_num_iter > 0):
+        k_of_t[0] = start_k
+        for t in range(1,total_num_iter):
+            if(t in reduction_indices):
+                k_of_t[t] = k_of_t[t-1]-step_size
+            else:
+                k_of_t[t] = k_of_t[t-1]
+
+    return k_of_t
+
 
 
 class Baseline(torch.nn.Module):
@@ -144,35 +253,119 @@ def nop_stats(dataloader, stats, sub_stats, print=True):
 
 
 def train_ebn(args):
-    time_base = np.arange(0, 1000, dt)
     if args.b > 1:
-        batch_axis = 1
+        batch_axis = 0
     else:
         batch_axis = None
 
     for epoch in range(args.epoch):
         t_st = datetime.now()
         for i, (noisy, clean, noise) in enumerate(train_loader):
-            # transpose from (batch, time) to (time, batch) and to numpy
-            clean = clean.transpose(1,0).cpu().numpy().squeeze()[0:1000]
-            noisy = noisy.transpose(1,0).cpu().numpy().squeeze()[0:1000]
+            t_start = time.time()
 
-            #assert(clean.shape[0] == 480000)
+            if clean.shape[0] != args.b:  # last batch might not be full, Rockpool cant handle that -> skip last batch
+                print("Skipping batch %d" % i)
+                continue
+
+            # transpose from (batch, time) to (time, batch) and to numpy
+            clean = clean.transpose(1,0).squeeze()  # .cpu().numpy()
+            noisy = noisy.transpose(1,0).squeeze()
+
+            #assert(clean.shape[1] == 480000)
+            time_base = np.arange(0, clean.shape[0]/1000, dt) # Rockpool can't handle dt = 1.0 -> set dt = 1e3 and normalize signal duration to that
+
+            clean_ts = TSContinuous(time_base, clean)
+            noisy_ts = TSContinuous(time_base, noisy)
+
+            # time_base = np.arange(0, 1.0, 1e-3)
+            # xor_data, xor_target, _ = generate_xor_sample(total_duration=1.0, dt=1e-3, amplitude=1.0)
+            # xor_data_ts = TSContinuous(time_base, xor_data)
+            # xor_target_ts = TSContinuous(time_base, xor_target)
+
+            net.reset_time()
+            loss, gradients, output_fct = net.train_output_target(noisy_ts,
+                                                        clean_ts,
+                                                        is_first = (i == 0) and (epoch == 0),
+                                                        opt_params={"step_size": 1e-4},
+                                                        batch_axis = batch_axis)
+
+            denoised = net.evolve(noisy_ts)
+            if batch_axis is not None:
+                snr_score = si_snr(denoised.samples[:,0].squeeze(), clean[:,0])
+            else:
+                snr_score = si_snr(denoised.samples[:,0].squeeze(), clean)
+
+            # print("Batch %d: %.2f seconds, SI-SNR: %f" %(i, time.time()-t_start, score.item()))
+            # print("SI-SNR ", score)
+
+            stats.training.correct_samples += torch.sum(snr_score).item()
+            stats.training.loss_sum += loss.item()
+            stats.training.num_samples += noisy.shape[1]
+
+            processed = i * train_loader.batch_size
+            total = len(train_loader.dataset)
+            time_elapsed = (datetime.now() - t_st).total_seconds()
+            samples_sec = time_elapsed / (i + 1) / train_loader.batch_size
+            header_list = [f'Train: [{processed}/{total} '
+                           f'({100.0 * processed / total:.0f}%)]']
+            stats.print(epoch, i, samples_sec, header=header_list)
+
+            writer.add_scalar('Loss/train', stats.training.loss, i)
+            writer.add_scalar('SI-SNR/train', stats.training.accuracy, i)
+
+        for i, (noisy, clean, noise) in enumerate(validation_loader):
+            #net.eval()
+
+            clean = clean.transpose(1,0).squeeze()  # .cpu().numpy()
+            noisy = noisy.transpose(1,0).squeeze()
+
+            time_base = np.arange(0, clean.shape[0]/1000, dt) # Rockpool can't handle dt = 1.0 -> set dt = 1e3 and normalize signal duration to that
 
             clean_ts = TSContinuous(time_base, clean)
             noisy_ts = TSContinuous(time_base, noisy)
 
             net.reset_time()
-            l_fcn, g_fcn, o_fcn = net.train_output_target(noisy_ts,
-                                                        clean_ts,
-                                                        is_first = (i == 0) and (epoch == 0),
-                                                        opt_params={"step_size": 1e-4},
-                                                        batch_axis = batch_axis,
-                                                        debug_nans = True)
-
             denoised = net.evolve(noisy_ts)
-            score = si_snr(denoised.samples, clean)
-            print("SI-SNR ", score)
+            #loss_mse_reg(net.__get_params(net.__opt_state), net._state, denoised, clean_ts)
+            loss = jnp.nanmean((denoised.samples - clean.numpy()) ** 2) # TODO: optimize? runs on CPU
+
+            if batch_axis is not None:
+                snr_score = si_snr(denoised.samples[:,0].squeeze(), clean[:,0])
+            else:
+                snr_score = si_snr(denoised.samples[:,0].squeeze(), clean)
+
+            stats.validation.correct_samples += torch.sum(snr_score).item()
+            stats.validation.loss_sum += loss.item()
+            stats.validation.num_samples += noisy.shape[1]
+
+            processed = i * validation_loader.batch_size
+            total = len(validation_loader.dataset)
+            time_elapsed = (datetime.now() - t_st).total_seconds()
+            samples_sec = time_elapsed / (i + 1) / validation_loader.batch_size
+            header_list = [f'Valid: [{processed}/{total} '
+                            f'({100.0 * processed / total:.0f}%)]']
+            stats.print(epoch, i, samples_sec, header=header_list)
+
+        #writer.add_scalar('Loss/train', stats.training.loss, epoch)
+        writer.add_scalar('Loss/valid', stats.validation.loss, epoch)
+        #writer.add_scalar('SI-SNR/train', stats.training.accuracy, epoch)
+        writer.add_scalar('SI-SNR/valid', stats.validation.accuracy, epoch)
+
+        stats.update()
+        stats.plot(path=trained_folder + '/')
+        if stats.validation.best_accuracy is True:
+            torch.save(module.state_dict(), trained_folder + '/network.pt')
+        stats.save(trained_folder + '/')
+
+    net.load_state_dict(torch.load(trained_folder + '/network.pt'))
+    net.export_hdf5(trained_folder + '/network.net')
+
+    params_dict = {}
+    for key, val in args._get_kwargs():
+        params_dict[key] = str(val)
+    writer.add_hparams(params_dict, {'SI-SNR': stats.validation.max_accuracy})
+    writer.flush()
+    writer.close()
 
     net.reset_all()
     net.noise_std = 0.0
@@ -264,17 +457,17 @@ def train_baseline(args):
 
         stats.update()
         stats.plot(path=trained_folder + '/')
-        if stats.validation.best_accuracy is True:
-            torch.save(module.state_dict(), trained_folder + '/network.pt')
+        #if stats.validation.best_accuracy is True:
+            #torch.save(module.state_dict(), trained_folder + '/network.pt')
         stats.save(trained_folder + '/')
 
-    net.load_state_dict(torch.load(trained_folder + '/network.pt'))
-    net.export_hdf5(trained_folder + '/network.net')
+    #net.load_state_dict(torch.load(trained_folder + '/network.pt'))
+    # net.export_hdf5(trained_folder + '/network.net')
 
-    params_dict = {}
-    for key, val in args._get_kwargs():
-        params_dict[key] = str(val)
-    writer.add_hparams(params_dict, {'SI-SNR': stats.validation.max_accuracy})
+    # params_dict = {}
+    # for key, val in args._get_kwargs():
+    #     params_dict[key] = str(val)
+    # writer.add_hparams(params_dict, {'SI-SNR': stats.validation.max_accuracy})
     writer.flush()
     writer.close()
 
@@ -396,7 +589,8 @@ if __name__ == '__main__':
         tau = np.linspace(0.01, 0.1, args.neurons)
         sr = np.max(np.abs(np.linalg.eigvals(w_rec)))
         w_rec = w_rec / sr * 0.95
-        dt=1#1e-3
+        dt=1e-3
+        duration=1.0
 
         net = RecRateEulerJax_IO(activation_func=H_tanh,
                                     w_in=w_in,
