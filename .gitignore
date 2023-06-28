@@ -2,3 +2,9 @@
 Trained/
 __pycache__/
 runs/
+**.wav
+**.slurm
+**.out
+dataset
+trained_model
+waveglow

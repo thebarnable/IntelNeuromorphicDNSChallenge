@@ -1,3 +1,0 @@
-[submodule "microsoft_dns"]
-	path = microsoft_dns
-	url = git@github.com:microsoft/DNS-Challenge.git
