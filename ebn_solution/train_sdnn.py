@@ -284,7 +284,7 @@ def train_ebn(args):
 
             # perform one optimization iteration (evolve net with inputs + calc loss (avg over batch) + calc gradients (BPTT) + update weights)
             net.reset_time()
-            loss, gradients, evolve_fct = net.train_output_target(noisy,
+            loss, gradients, evolve_fct, denoised = net.train_output_target(noisy,
                                                         clean,
                                                         is_first = is_first,
                                                         batch_axis = batch_axis,
@@ -294,8 +294,8 @@ def train_ebn(args):
                                                         opt_params = {"step_size": 1e-4})
             stats.training.loss_sum += loss.item() # track running mean over loss
 
-            # evolve net with inputs again to perform inference
-            denoised, new_state, states_t = evolve_fct() # = rate_jax::RecRateEulerJax::_evolve_functional::evol_func::_get_rec_evolve_jit::rec_evolve_jit
+            # evolve net with inputs again to perform inference -> EDIT: recover inference results from train_output_target, hacked into Rockpool
+            #denoised, new_state, states_t = evolve_fct() # = rate_jax::RecRateEulerJax::_evolve_functional::evol_func::_get_rec_evolve_jit::rec_evolve_jit
             denoised = np.asarray(denoised.squeeze())
             clean = clean.squeeze()
             noisy = noisy.squeeze()
