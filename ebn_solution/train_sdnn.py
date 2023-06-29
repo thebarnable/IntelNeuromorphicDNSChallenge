@@ -526,7 +526,10 @@ if __name__ == '__main__':
     identifier = args.exp
     if args.seed is not None:
         torch.manual_seed(args.seed)
-        identifier += '_{}{}'.format(args.optim, args.seed)
+        np.random.seed(args.seed)
+        jax.random.PRNGKey(args.seed)
+        random.seed(args.seed)
+        #identifier += '_{}{}'.format(args.optim, args.seed)
 
     trained_folder = 'Trained' + identifier
     logs_folder = 'Logs' + identifier
