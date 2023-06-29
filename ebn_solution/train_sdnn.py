@@ -274,8 +274,8 @@ def train_ebn(args):
                 continue
 
             if args.b > 1:
-                noisy = noisy.unsqueeze(2)#.numpy()#jnp.asarray(noisy.unsqueeze(2).numpy())
-                clean = clean.unsqueeze(2)#.numpy()#jnp.asarray(clean.unsqueeze(2).numpy())
+                noisy = noisy.unsqueeze(2)
+                clean = clean.unsqueeze(2)
             else:
                 noisy = noisy.transpose(1,0)
                 clean = clean.transpose(1,0)
@@ -316,58 +316,70 @@ def train_ebn(args):
             # print loss & snr to tensorboard
             writer.add_scalar('Loss/train', stats.training.loss, i)
             writer.add_scalar('SI-SNR/train', stats.training.accuracy, i)
-
+        
+        t_val_st = time.time()
         for i, (noisy, clean, noise) in enumerate(validation_loader):
-            clean = clean.transpose(1,0).squeeze()  # .cpu().numpy()
-            noisy = noisy.transpose(1,0).squeeze()
-
-            time_base = np.arange(0, clean.shape[0]/1000, dt) # Rockpool can't handle dt = 1.0 -> set dt = 1e3 and normalize signal duration to that
-
-            clean_ts = TSContinuous(time_base, clean)
-            noisy_ts = TSContinuous(time_base, noisy)
-
-            net.reset_time()
-            denoised = net.evolve(noisy_ts)
-            #loss_mse_reg(net.__get_params(net.__opt_state), net._state, denoised, clean_ts)
-            loss = jnp.nanmean((denoised.samples - clean.numpy()) ** 2) # TODO: optimize? runs on CPU
-
-            if batch_axis is not None:
-                snr_score = si_snr(denoised.samples[:,0].squeeze(), clean[:,0])
+           
+            # setup data (noisy = clean + noise   [args.b x 480000])
+            if args.b > 1:
+                noisy = noisy.unsqueeze(2)
+                clean = clean.unsqueeze(2)
             else:
-                snr_score = si_snr(denoised.samples[:,0].squeeze(), clean)
+                noisy = noisy.transpose(1,0)
+                clean = clean.transpose(1,0)
+            noisy = noisy.numpy()
+            clean = clean.numpy()
 
-            stats.validation.correct_samples += torch.sum(snr_score).item()
-            stats.validation.loss_sum += loss.item()
-            stats.validation.num_samples += noisy.shape[1]
+            # init net if not done yet
+            if not net.initialized:
+                net.train_output_target(noisy,
+                                        clean,
+                                        is_first = True,
+                                        init_only = True,
+                                        batch_axis = batch_axis,
+                                        loss_fcn = loss_mse_reg_default,
+                                        loss_params = loss_mse_reg_default_params,
+                                        optimizer = jopt.adam,
+                                        opt_params = {"step_size": 1e-4})
+            
+            # evolve net with inputs again to perform inference
+            denoised, new_state, states_t = net.evolve_directly(noisy) # = rate_jax::RecRateEulerJax::_evolve_functional::evol_func::_get_rec_evolve_jit::rec_evolve_jit
+
+            denoised = np.asarray(denoised.squeeze())
+            clean = clean.squeeze()
+            noisy = noisy.squeeze()
+
+            # calc si-snr as main accuracy metric
+            snr_score = si_snr(denoised, clean)
+            stats.validation.correct_samples += torch.sum(snr_score).item() # track running mean over snr (hacky: abuse stats.training.accuracy=correct_samples/num_samples=sum(snr)/num_samples)
+            stats.validation.num_samples += args.b
 
             processed = i * validation_loader.batch_size
             total = len(validation_loader.dataset)
-            time_elapsed = (datetime.now() - t_st).total_seconds()
-            samples_sec = time_elapsed / (i + 1) / validation_loader.batch_size
-            header_list = [f'Valid: [{processed}/{total} '
-                            f'({100.0 * processed / total:.0f}%)]']
-            stats.print(epoch, i, samples_sec, header=header_list)
+            stats.print(epoch, i, None, [f'Valid: {processed}/{total} ({100.0 * processed / total:.0f}%), time since val start: {time.time() - t_val_st:.2f}s'])
+
+            return
 
         #writer.add_scalar('Loss/train', stats.training.loss, epoch)
         writer.add_scalar('Loss/valid', stats.validation.loss, epoch)
         #writer.add_scalar('SI-SNR/train', stats.training.accuracy, epoch)
         writer.add_scalar('SI-SNR/valid', stats.validation.accuracy, epoch)
 
-        stats.update()
-        stats.plot(path=trained_folder + '/')
+        # stats.update()
+        # stats.plot(path=trained_folder + '/')
         if stats.validation.best_accuracy is True:
-            torch.save(module.state_dict(), trained_folder + '/network.pt')
+            net.save_layer("net.json")
         stats.save(trained_folder + '/')
 
-    net.load_state_dict(torch.load(trained_folder + '/network.pt'))
-    net.export_hdf5(trained_folder + '/network.net')
+    # net.load_state_dict(torch.load(trained_folder + '/network.pt'))
+    # net.export_hdf5(trained_folder + '/network.net')
 
-    params_dict = {}
-    for key, val in args._get_kwargs():
-        params_dict[key] = str(val)
-    writer.add_hparams(params_dict, {'SI-SNR': stats.validation.max_accuracy})
-    writer.flush()
-    writer.close()
+    # params_dict = {}
+    # for key, val in args._get_kwargs():
+    #     params_dict[key] = str(val)
+    # writer.add_hparams(params_dict, {'SI-SNR': stats.validation.max_accuracy})
+    # writer.flush()
+    # writer.close()
 
     net.reset_all()
     net.noise_std = 0.0
