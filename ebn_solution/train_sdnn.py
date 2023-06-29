@@ -475,6 +475,10 @@ if __name__ == '__main__':
     parser.add_argument('-baseline',
                         action='store_true',
                         help='use baseline instead of EBN')
+    parser.add_argument('-model',
+                        type=str,
+                        default="",
+                        help='json file containing parameters of reservoir net (saved using net.save_layer())')
     parser.add_argument('-neurons',
                         type=int,
                         default=64,
@@ -583,18 +587,36 @@ if __name__ == '__main__':
                                 lr=args.lr,
                                 weight_decay=1e-5)
     else:
-        w_in = 10.0 * (np.random.rand(1, args.neurons) - .5)
-        w_rec = 0.2 * (np.random.rand(args.neurons, args.neurons) - .5)
-        w_rec -= np.eye(args.neurons) * w_rec
-        w_out = 0.4*np.random.uniform(size=(args.neurons, 1))-0.2
-        bias = 0.0 * (np.random.rand(args.neurons) - 0.5)
-        tau = np.linspace(0.01, 0.1, args.neurons)
-        sr = np.max(np.abs(np.linalg.eigvals(w_rec)))
-        w_rec = w_rec / sr * 0.95
-        dt=1e-3
-        duration=1.0
+        if args.model != "":
+            f = open(args.model)
+            loaded_net = json.load(f)
+            w_in = np.array(loaded_net['w_in'])
+            w_rec = np.array(loaded_net['w_recurrent'])
+            w_out = np.array(loaded_net['w_out'])
+            bias = loaded_net['bias']
+            tau = loaded_net['tau']
+            name = loaded_net['name']
+            if loaded_net['activation_func'] == 'tanh':
+                activation_func = H_tanh
+            else:
+                print("Error: unknown activation function in loaded network")
+                exit(1)
+            f.close()
+        else:
+            w_in = 10.0 * (np.random.rand(1, args.neurons) - .5)
+            w_rec = 0.2 * (np.random.rand(args.neurons, args.neurons) - .5)
+            w_rec -= np.eye(args.neurons) * w_rec
+            w_out = 0.4*np.random.uniform(size=(args.neurons, 1))-0.2
+            bias = 0.0 * (np.random.rand(args.neurons) - 0.5)
+            tau = np.linspace(0.01, 0.1, args.neurons)
+            sr = np.max(np.abs(np.linalg.eigvals(w_rec)))
+            w_rec = w_rec / sr * 0.95
+            activation_func = H_tanh
+            name = 'reservoir'
 
-        net = RecRateEulerJax_IO(activation_func=H_tanh,
+        dt = 1e-3
+        duration = 1.0
+        net = RecRateEulerJax_IO(activation_func=activation_func,
                                     w_in=w_in,
                                     w_recurrent=w_rec,
                                     w_out=w_out,
@@ -602,7 +624,7 @@ if __name__ == '__main__':
                                     bias=bias,
                                     dt=dt,
                                     noise_std=0.0,
-                                    name="hidden")
+                                    name=name)
 
     if len(args.gpu) == 1:
         module = net
