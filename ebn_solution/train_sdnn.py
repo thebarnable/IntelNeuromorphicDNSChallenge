@@ -6,12 +6,13 @@ import os
 import h5py
 import argparse
 import numpy as np
-from jax import jit
+from jax import jit, vmap
 from jax import numpy as jnp
 import jax.example_libraries.optimizers as jopt
 import matplotlib.pyplot as plt
 from datetime import datetime
 import time
+import random
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -149,14 +150,13 @@ def loss_mse_reg_default( # Default helper from Rockpool for reservoir nets
     reg_l2_rec: float = 1.0,            # Factor when combining loss, on L2-norm term of recurrent weights
 ) -> float:
     mse = lambda_mse * jnp.nanmean((output_batch_t - target_batch_t) ** 2)  # output-target MSE loss
-    tau_loss = reg_tau * jnp.nanmean(jnp.where(params["tau"] < min_tau, np.exp(-(params["tau"] - min_tau)), 0))  # punish tau < min_tau
+    tau_loss = reg_tau * jnp.nanmean(jnp.where(params["tau"] < min_tau, jnp.exp(-(params["tau"] - min_tau)), 0))  # punish tau < min_tau
     w_res_norm = reg_l2_rec * jnp.nanmean(params["w_recurrent"] ** 2)  # punish large w_rec
     return mse + w_res_norm + tau_loss
 
 loss_mse_reg_default_params = {"lambda_mse": 1.0, "reg_tau": 10000.0, "reg_l2_rec": 1.0, "min_tau": 1e-3 * 11}
 
 # Networks
-
 class Baseline(torch.nn.Module):
     def __init__(self, threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0):
         super().__init__()
@@ -238,48 +238,45 @@ def train_ebn(args):
 
     for epoch in range(args.epoch):
         t_st = datetime.now()
+
         for i, (noisy, clean, noise) in enumerate(train_loader):
             # noisy = clean + noise   [args.b x 480000]
             t_start = time.time()
-
+            is_first = (i==0) and (epoch==0)
             if clean.shape[0] != args.b:  # last batch might not be full, Rockpool cant handle that -> skip last batch
                 print("Skipping batch %d" % i)
                 continue
 
-            # transpose from [batch x time] to [time x batch]
-            clean = clean.transpose(1,0).squeeze()
-            noisy = noisy.transpose(1,0).squeeze()
-
-            # use helper class for sampling from time series
-            time_base = np.arange(0, clean.shape[0]/1000, dt) # Rockpool can't handle dt = 1.0 -> set dt = 1e3 and normalize signal duration to that
-
-            clean_ts = TSContinuous(time_base, clean)
-            noisy_ts = TSContinuous(time_base, noisy)
+            if args.b > 1:
+                noisy = noisy.unsqueeze(2)#.numpy()#jnp.asarray(noisy.unsqueeze(2).numpy())
+                clean = clean.unsqueeze(2)#.numpy()#jnp.asarray(clean.unsqueeze(2).numpy())
+            else:
+                noisy = noisy.transpose(1,0)
+                clean = clean.transpose(1,0)
+            noisy = noisy.numpy()
+            clean = clean.numpy()
 
             # perform one optimization iteration (evolve net with inputs + calc loss (avg over batch) + calc gradients (BPTT) + update weights)
             net.reset_time()
-            loss, gradients, output_fct = net.train_output_target(noisy_ts,
-                                                        clean_ts,
-                                                        is_first = (i == 0) and (epoch == 0),
+            loss, gradients, evolve_fct = net.train_output_target(noisy,
+                                                        clean,
+                                                        is_first = is_first,
                                                         batch_axis = batch_axis,
                                                         loss_fcn = loss_mse_reg_default,
                                                         loss_params = loss_mse_reg_default_params,
                                                         optimizer = jopt.adam,
                                                         opt_params = {"step_size": 1e-4})
 
-            # evolve net with inputs again to perform inference (TODO: why do again? no performance impact apparently)
-            denoised = net.evolve(noisy_ts)
-            if batch_axis is not None:
-                snr_score = si_snr(denoised.samples[:,0].squeeze(), clean[:,0])
-            else:
-                snr_score = si_snr(denoised.samples[:,0].squeeze(), clean)
+            # evolve net with inputs again to perform inference
+            denoised, new_state, states_t = evolve_fct() # = rate_jax::RecRateEulerJax::_evolve_functional::evol_func::_get_rec_evolve_jit::rec_evolve_jit
+            denoised = np.asarray(denoised.squeeze())
+            clean = clean.squeeze()
 
-            # print("Batch %d: %.2f seconds, SI-SNR: %f" %(i, time.time()-t_start, score.item()))
-            # print("SI-SNR ", score)
+            snr_score = si_snr(denoised, clean)
 
             stats.training.correct_samples += torch.sum(snr_score).item()
             stats.training.loss_sum += loss.item()
-            stats.training.num_samples += noisy.shape[1]
+            stats.training.num_samples += args.b # 
 
             processed = i * train_loader.batch_size
             total = len(train_loader.dataset)
@@ -560,10 +557,10 @@ if __name__ == '__main__':
                                 lr=args.lr,
                                 weight_decay=1e-5)
     else:
-        w_in = 10.0 * (np.random.rand(args.b, args.neurons) - .5)
+        w_in = 10.0 * (np.random.rand(1, args.neurons) - .5)
         w_rec = 0.2 * (np.random.rand(args.neurons, args.neurons) - .5)
         w_rec -= np.eye(args.neurons) * w_rec
-        w_out = 0.4*np.random.uniform(size=(args.neurons, args.b))-0.2
+        w_out = 0.4*np.random.uniform(size=(args.neurons, 1))-0.2
         bias = 0.0 * (np.random.rand(args.neurons) - 0.5)
         tau = np.linspace(0.01, 0.1, args.neurons)
         sr = np.max(np.abs(np.linalg.eigvals(w_rec)))
