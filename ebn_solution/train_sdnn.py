@@ -13,6 +13,8 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import time
 import random
+import json
+import soundfile as sf
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -120,6 +122,27 @@ def generate_xor_sample(total_duration, dt, amplitude=1, use_smooth=True, plot=F
         plt.plot(t, target)
         plt.show()
     return (data[:int(total_duration/dt)], target[:int(total_duration/dt)], input_label)
+
+def save_wav(clean, noisy, denoised, id="", out="audio/", sample=0):
+    # clean,noisy,denoised: (batch,samples) or (samples,)
+    # out: output directory
+    # sample: if batched data, which sample to save
+
+    batched=False
+    if len(clean.shape) > 1:
+        batched=True
+    
+    if batched:
+        clean=clean[sample,:]
+        noisy=noisy[sample,:]
+        denoised=denoised[sample,:]
+
+    if not os.path.exists(out):
+        os.mkdir(out)
+
+    sf.write(out+"clean"+id+".wav", clean, 16000)
+    sf.write(out+"noisy"+id+".wav", noisy, 16000)
+    sf.write(out+"denoised"+id+".wav", denoised, 16000)
 
 # Loss functions
 ## imports
