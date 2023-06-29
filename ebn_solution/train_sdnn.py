@@ -657,13 +657,13 @@ if __name__ == '__main__':
                               batch_size=args.b,
                               shuffle=True,
                               collate_fn=collate_fn,
-                              num_workers=4,
+                              num_workers=1,
                               pin_memory=True)
     validation_loader = DataLoader(validation_set,
                                    batch_size=args.b,
                                    shuffle=True,
                                    collate_fn=collate_fn,
-                                   num_workers=4,
+                                   num_workers=1,
                                    pin_memory=True)
 
     stats = slayer.utils.LearningStats(accuracy_str='SI-SNR',
