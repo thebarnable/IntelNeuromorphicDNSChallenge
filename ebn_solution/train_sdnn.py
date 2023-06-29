@@ -264,6 +264,9 @@ def train_ebn(args):
         t_st = datetime.now()
 
         for i, (noisy, clean, noise) in enumerate(train_loader):
+            if args.inference:
+                break
+
             # setup data (noisy = clean + noise   [args.b x 480000])
             is_first = (i==0) and (epoch==0)
             if clean.shape[0] != args.b:  # last batch might not be full, Rockpool cant handle that -> skip last batch
@@ -475,6 +478,9 @@ if __name__ == '__main__':
     parser.add_argument('-baseline',
                         action='store_true',
                         help='use baseline instead of EBN')
+    parser.add_argument('-inference',
+                    action='store_true',
+                    help='perform only inference on reservoir')
     parser.add_argument('-model',
                         type=str,
                         default="",
