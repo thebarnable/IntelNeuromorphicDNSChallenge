@@ -81,23 +81,25 @@ if device == "cpu":
 dataset_dir = "../dataset/datasets_fullband/"
 
 if 'gpu01.ids.rwth-aachen.de' == os.uname()[1]:
-  trained_dir = "../trained_model_gpu01"
+  trained_dir = "../trained_model_gpu01/"
 else:
-  trained_dir = "../trained_model"
+  trained_dir = "../trained_model/"
 assert os.path.isdir(trained_dir), "Directory " + trained_dir + " does not exist"
+
+# Check that output directories for this experiment do not yet exist and create them
+# audio
+#assert os.path.isdir("../audio/" + tag) == False, "../audio/" + tag + " already exists"
+if os.path.isdir("../audio/" + tag) == False:
+  os.makedirs("../audio/" + tag)
+# trained models
+my_trained_dir = trained_dir + tag
+assert os.path.isdir(my_trained_dir) == False, my_trained_dir + " already exists"
 
 ### Dataset ###
 
 # Loading data
 train_set = DNSAudio(root=dataset_dir + 'training_set/')
 validation_set = DNSAudio(root=dataset_dir + 'validation_set/')
-
-# Example output
-noisy_audio, clean_audio, noise_audio, metadata = train_set.__getitem__(0)
-print(metadata)
-saveAudio("example_noisy.wav", noisy_audio)
-saveAudio("example_clean.wav", clean_audio)
-saveAudio("example_noise.wav", noise_audio)
 
 def collate_fn(batch):
   noisy, clean, noise = [], [], []
@@ -226,26 +228,28 @@ for epoch in range(epochs):
 
       total_loss += loss.detach().item()
       if i == 0:
-        saveAudio("d2ebug_coeffs_train_0_noisy_{}.wav".format(epoch), noisy[0], toCPU=True)
-        saveAudio("d2ebug_coeffs_train_0_clean_{}.wav".format(epoch), clean[0], toCPU=True)
-        saveAudio("d2ebug_coeffs_train_0_output_{}.wav".format(epoch), output[0].detach(), toCPU=True)
+        saveAudio("/{}/e{}_i{}_train_noisy.wav".format(tag, epoch, i), noisy[0], toCPU=True)
+        saveAudio("/{}/e{}_i{}_train_clean.wav".format(tag, epoch, i), clean[0], toCPU=True)
+        saveAudio("/{}/e{}_i{}_train_output.wav".format(tag, epoch, i), output[0].detach(), toCPU=True)
       if i == 1000:
-        saveAudio("d2ebug_coeffs_train_1_noisy_{}.wav".format(epoch), noisy[0], toCPU=True)
-        saveAudio("d2ebug_coeffs_train_1_clean_{}.wav".format(epoch), clean[0], toCPU=True)
-        saveAudio("d2ebug_coeffs_train_1_output_{}.wav".format(epoch), output[0].detach(), toCPU=True)
+        saveAudio("/{}/e{}_i{}_train_noisy.wav".format(tag, epoch, i), noisy[0], toCPU=True)
+        saveAudio("/{}/e{}_i{}_train_clean.wav".format(tag, epoch, i), clean[0], toCPU=True)
+        saveAudio("/{}/e{}_i{}_train_output.wav".format(tag, epoch, i), output[0].detach(), toCPU=True)
       if i == 10000:
-        saveAudio("d2ebug_coeffs_train_2_noisy_{}.wav".format(epoch), noisy[0], toCPU=True)
-        saveAudio("d2ebug_coeffs_train_2_clean_{}.wav".format(epoch), clean[0], toCPU=True)
-        saveAudio("d2ebug_coeffs_train_2_output_{}.wav".format(epoch), output[0].detach(), toCPU=True)
+        saveAudio("/{}/e{}_i{}_train_noisy.wav".format(tag, epoch, i), noisy[0], toCPU=True)
+        saveAudio("/{}/e{}_i{}_train_clean.wav".format(tag, epoch, i), clean[0], toCPU=True)
+        saveAudio("/{}/e{}_i{}_train_output.wav".format(tag, epoch, i), output[0].detach(), toCPU=True)
     print("Total loss: ", total_loss/len(train_loader))
     print("Time elapsed - train: ", datetime.now() - t_st)
   
-    saveAudio("d2ebug_coeffs_train_3_noisy_{}.wav".format(epoch), noisy[0], toCPU=True)
-    saveAudio("d2ebug_coeffs_train_3_clean_{}.wav".format(epoch), clean[0], toCPU=True)
-    saveAudio("d2ebug_coeffs_train_3_output_{}.wav".format(epoch), output[0].detach(), toCPU=True)
+    saveAudio("/{}/e{}_i{}e_train_noisy.wav".format(tag, epoch, i), noisy[0], toCPU=True)
+    saveAudio("/{}/e{}_i{}e_train_clean.wav".format(tag, epoch, i), clean[0], toCPU=True)
+    saveAudio("/{}/e{}_i{}e_train_output.wav".format(tag, epoch, i), output[0].detach(), toCPU=True)
 
-    torch.save(net.state_dict(), "{}/m2odel_epoch_{}.pt".format(trained_folder, epoch))
-    torch.save(dns_optimizer.state_dict(), "{}/o2ptimizer_epoch_{}.pt".format(trained_folder, epoch))
+    if os.path.isdir(my_trained_dir) == False:
+      os.makedirs(my_trained_dir)
+    torch.save(net.state_dict(), "{}/model_epoch_{}.pt".format(my_trained_dir, epoch))
+    torch.save(dns_optimizer.state_dict(), "{}/optimizer_epoch_{}.pt".format(my_trained_dir, epoch))
 
   # Validation
   if VALIDATION:
@@ -302,31 +306,29 @@ for epoch in range(epochs):
         
         assert torch.isnan(loss) == False
         
-        #print()
         print("snr: {}".format(snr.item()))
-        #print(F.mse_loss(noisy, clean))
         print("mse: {}".format(mse.item()))
         print("loss: {}".format(loss.item()), flush=True)
 
         total_loss += loss.detach().item()
         if i == 0:
-          saveAudio("debug_val_0_noisy.wav", noisy[0], toCPU=True)
-          saveAudio("debug_val_0_clean.wav", clean[0], toCPU=True)
-          saveAudio("debug_val_0_output.wav", output[0].detach(), toCPU=True)
+          saveAudio("/{}/e{}_i{}_val_noisy.wav".format(tag, epoch, i), noisy[0], toCPU=True)
+          saveAudio("/{}/e{}_i{}_val_clean.wav".format(tag, epoch, i), clean[0], toCPU=True)
+          saveAudio("/{}/e{}_i{}_val_output.wav".format(tag, epoch, i), output[0].detach(), toCPU=True)
         if i == 1000:
-          saveAudio("debug_val_1_noisy.wav", noisy[0], toCPU=True)
-          saveAudio("debug_val_1_clean.wav", clean[0], toCPU=True)
-          saveAudio("debug_val_1_output.wav", output[0].detach(), toCPU=True)
+          saveAudio("/{}/e{}_i{}_val_noisy.wav".format(tag, epoch, i), noisy[0], toCPU=True)
+          saveAudio("/{}/e{}_i{}_val_clean.wav".format(tag, epoch, i), clean[0], toCPU=True)
+          saveAudio("/{}/e{}_i{}_val_output.wav".format(tag, epoch, i), output[0].detach(), toCPU=True)
         if i == 10000:
-          saveAudio("debug_val_2_noisy.wav", noisy[0], toCPU=True)
-          saveAudio("debug_val_2_clean.wav", clean[0], toCPU=True)
-          saveAudio("debug_val_2_output.wav", output[0].detach(), toCPU=True)
-    print("Total loss: ", total_loss/len(train_loader))
+          saveAudio("/{}/e{}_i{}_val_noisy.wav".format(tag, epoch, i), noisy[0], toCPU=True)
+          saveAudio("/{}/e{}_i{}_val_clean.wav".format(tag, epoch, i), clean[0], toCPU=True)
+          saveAudio("/{}/e{}_i{}_val_output.wav".format(tag, epoch, i), output[0].detach(), toCPU=True)
+    print("Total loss: ", total_loss/len(validation_loader))
     print("Time elapsed - val: ", datetime.now() - t_st)
-
-    saveAudio("debug_val_res_noisy.wav", noisy[0], toCPU=True)
-    saveAudio("debug_val_res_clean.wav", clean[0], toCPU=True)
-    saveAudio("debug_val_res_output.wav", output[0].detach(), toCPU=True)
+  
+    saveAudio("/{}/e{}_i{}e_val_noisy.wav".format(tag, epoch, i), noisy[0], toCPU=True)
+    saveAudio("/{}/e{}_i{}e_val_clean.wav".format(tag, epoch, i), clean[0], toCPU=True)
+    saveAudio("/{}/e{}_i{}e_val_output.wav".format(tag, epoch, i), output[0].detach(), toCPU=True)
 
 
   print("Done")

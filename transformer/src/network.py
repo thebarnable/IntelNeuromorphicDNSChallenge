@@ -97,7 +97,8 @@ class DNSModel(nn.Module):
     flattened_src = src_spec
 
     #print("flattened_src: ", flattened_src.shape)
-    reshaped_src = flattened_src.view(-1, self.fft_out_size)
+    #print(self.fft_out_size, flush=True)
+    reshaped_src = flattened_src.reshape(-1, self.fft_out_size)
     emb_src = self.swish(self.linear_in(reshaped_src))
     #print("emb_src: ", emb_src.shape)
     emb_src = emb_src.view(self.batch, src_spec.shape[1], self.d_model)
@@ -111,7 +112,7 @@ class DNSModel(nn.Module):
     tgt_spec = tgt_spec.permute(0,2,1)
     flattened_tgt = tgt_spec
     #print("flattened_src: ", flattened_src.shape)
-    reshaped_tgt = flattened_tgt.view(-1, self.fft_out_size)
+    reshaped_tgt = flattened_tgt.reshape(-1, self.fft_out_size)
     emb_tgt = self.swish(self.linear_in(reshaped_tgt))
     #print("emb_tgt: ", emb_tgt.shape)
     emb_tgt = emb_tgt.view(self.batch, tgt_spec.shape[1], self.d_model)
