@@ -2,14 +2,13 @@ import re
 import matplotlib.pyplot as plt
 
 # Read the file
-with open("testing_dns_transformer.out", "r") as file:
-#with open("dns_transformer.out", "r") as file:
+with open("example_vary.out", "r") as file:
     content = file.read()
 
 # Extract the values from the last tensor in each entry
-loss_pattern = r"loss: ([\d.e-]+)"
-mse_pattern = r"mse: ([\d.e-]+)"
-snr_pattern = r"snr: ([\d.e-]+)"
+loss_pattern = r"l ([\d.e-]+)"
+mse_pattern = r"m ([\d.e-]+)"
+snr_pattern = r"s ([\d.e-]+)"
 loss_values = re.findall(loss_pattern, content)
 mse_values = re.findall(mse_pattern, content)
 snr_values = re.findall(snr_pattern, content)

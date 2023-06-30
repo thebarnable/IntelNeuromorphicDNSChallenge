@@ -7,4 +7,5 @@ runs/
 **.out
 dataset
 trained_model
+trained_model_gpu01
 waveglow
