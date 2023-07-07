@@ -39,6 +39,7 @@ tag = args.config
 print("Using Experiment with tag ", tag)
 pprint(config[tag])
 
+
 # Check config
 assert config[tag]['device'] == "cuda" or config[tag]['device'] == "cpu", "Device must be 'cuda' or 'cpu'"
 assert config[tag]['network'] == "generative" or config[tag]['network'] == "scaling", "Network must be 'generative' or 'scaling'"
@@ -55,6 +56,21 @@ assert config[tag]['stride_s'] > 0, "Stride duration must be greater than 0"
 assert config[tag]['loss_mse']['mode'] == "scale" or config[tag]['loss_mse']['mode'] == "frequency", "MSE loss mode must be 'scale' or 'frequency'"
 assert config[tag]['loss_mse']['weight'] >= 0, "MSE loss weight must be non-negative"
 assert config[tag]['loss_snr'] >= 0, "SNR loss weight must be non-negative"
+
+if 'gpu01.ids.rwth-aachen.de' == os.uname()[1]:
+  trained_dir = "../trained_model_gpu01/"
+else:
+  trained_dir = "../trained_model/"
+assert os.path.isdir(trained_dir), "Directory " + trained_dir + " does not exist"
+load_pretrained = ("pretrained" in config[tag])
+if load_pretrained:
+  pretrained_dir = trained_dir + "prev/" + config[tag]["pretrained"] + "/"
+  assert os.path.isdir(pretrained_dir), pretrained_dir + " does not exist"
+  assert "pretrained_epoch" in config[tag], "pretrained_epoch is not in the configuration"
+  assert config[tag]['pretrained_epoch'] > 0, "Number of epochs must be greater than 0"
+  pretrained_epoch = config[tag]['pretrained_epoch'] - 1
+else:
+  pretrained_epoch = 0
 
 # Set parameters
 device = config[tag]['device']
@@ -79,12 +95,6 @@ if device == "cpu":
   torch.set_num_threads(32)
 
 dataset_dir = "../dataset/datasets_fullband/"
-
-if 'gpu01.ids.rwth-aachen.de' == os.uname()[1]:
-  trained_dir = "../trained_model_gpu01/"
-else:
-  trained_dir = "../trained_model/"
-assert os.path.isdir(trained_dir), "Directory " + trained_dir + " does not exist"
 
 # Check that output directories for this experiment do not yet exist and create them
 # audio
@@ -117,13 +127,15 @@ def collate_fn(batch):
 ############################################################
 
 net = DNSModel(sample_rate, n_fft, frame, stride, device, batch, phase, transformer)
+if load_pretrained:
+  net.load_state_dict(torch.load("{}/model_epoch_{}.pt".format(pretrained_dir, pretrained_epoch)))
 
 params = sum(p.numel() for p in net.parameters() if p.requires_grad)
 train_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
 print("No. params: ", params)
 print("No. trainable params: ", train_params)
 
-net.to(device)
+nn.DataParallel(net.to(device))
 train_loader = DataLoader(train_set, batch_size=batch, shuffle=True, collate_fn=collate_fn, num_workers=4, pin_memory=True)
 validation_loader = DataLoader(validation_set, batch_size=batch, shuffle=True, collate_fn=collate_fn, num_workers=4, pin_memory=True)
 
@@ -131,10 +143,13 @@ if optimizer == "SGD":
   dns_optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=momentum)
 else:
   dns_optimizer = torch.optim.Adam(net.parameters(), lr=lr)
+if load_pretrained:
+  dns_optimizer.load_state_dict(torch.load("{}/optimizer_epoch_{}.pt".format(pretrained_dir, pretrained_epoch)))
 
 my_fourier = FourierTransform(n_fft, stride, frame)
 
-for epoch in range(epochs):
+for this_epoch in range(epochs):
+  epoch = this_epoch + pretrained_epoch
   print("EPOCH: ", epoch)
   #training
   if TRAINING:
@@ -160,11 +175,6 @@ for epoch in range(epochs):
       tgt_phase = tgt[1]
       tgt_mag = tgt[0]
       tgt_mag = tgt_mag/torch.max(torch.abs(tgt_mag))
-      
-      # debugging only - train on noisy only (also at output)
-      #tgt_phase = src[1]
-      #tgt_mag = src[0]
-      #tgt_mag = src_mag/torch.max(torch.abs(src_mag))
 
       if phase:
         net_src = torch.cat((src_mag, src_phase), dim=1)
@@ -178,6 +188,8 @@ for epoch in range(epochs):
         if phase:
           phase_shift = tgt_phase - src_phase
           scaling_coeffs = torch.cat((scaling_coeffs_mag, phase_shift), dim=1)
+        else:
+          scaling_coeffs = scaling_coeffs_mag
         net_out = net(net_src, scaling_coeffs)
 
         if phase:
@@ -191,11 +203,11 @@ for epoch in range(epochs):
           else:
             mse = F.mse_loss(net_tgt[:,:,1:], output_spec)
         else:
-          output_spec = (net_src[:,:,1:]+OFFSET)*mag_factors_coeffs_out
+          output_spec = (net_src[:,:,1:]+OFFSET)*net_out
           out_mag = output_spec
           out_phase = src_phase[:, :, 1:]
           if mse_mode == "scale":
-            mse = F.mse_loss(mag_factors_coeffs[:,:,1:], mag_factors_coeffs_out)
+            mse = F.mse_loss(scaling_coeffs[:,:,1:], net_out)
           else:
             mse = F.mse_loss(tgt_mag[:,:,1:], output_spec)
         output = my_fourier.istft((out_mag, out_phase))

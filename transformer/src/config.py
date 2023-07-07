@@ -22,7 +22,7 @@
 ############################################################################
 #### Network parameters from Attention is all you need (Vaswani et al.) ####
 ############################################################################
-# "network" : {
+# "transformer" : {
 #               "d_model" : 512,
 #               "heads" : 8,
 #               "enc" : 6,
@@ -90,8 +90,8 @@ config = {
     "device" : "cuda",
     "network" : "scaling",
     "epochs" : 1,
-    "batch" : 3,
-    "phase" : True,
+    "batch" : 6,
+    "phase" : False,
     "optimizer" : "Adam",
     "lr" : 0.01,
     "momentum" : 0,
@@ -113,6 +113,342 @@ config = {
                       "dropout" : 0.1
                     }
   },
+
+  # continue training
+  'scaling_2_SGD_e10_e30' : {
+    "device" : "cuda",
+    "network" : "scaling",
+    "pretrained" : "scaling_2_SGD_e10",
+    "pretrained_epoch" : 10,
+    "epochs" : 20,
+    "batch" : 2,
+    "phase" : True,
+    "optimizer" : "SGD",
+    "lr" : 0.01,
+    "momentum" : 0,
+    "sample_rate" : 16000,
+    "n_fft" : 512,
+    "frame_s" : 0.025,
+    "stride_s" : 0.01,
+    "loss_mse" :  {
+                    "mode" : "scale",
+                    "weight" : 1
+                  },
+    "loss_snr" : 0.1,
+    "transformer" : {
+                      "d_model" : 256,
+                      "heads" : 8,
+                      "enc" : 4,
+                      "dec" : 4,
+                      "d_ff" : 256,
+                      "dropout" : 0.1
+                    }
+  },
+
+  # 10 epochs
+  'scaling_2_SGD_mse0_5_e10' : {
+    "device" : "cuda",
+    "network" : "scaling",
+    "epochs" : 10,
+    "batch" : 2,
+    "phase" : True,
+    "optimizer" : "SGD",
+    "lr" : 0.01,
+    "momentum" : 0,
+    "sample_rate" : 16000,
+    "n_fft" : 512,
+    "frame_s" : 0.025,
+    "stride_s" : 0.01,
+    "loss_mse" :  {
+                    "mode" : "scale",
+                    "weight" : 0.5
+                  },
+    "loss_snr" : 0.1,
+    "transformer" : {
+                      "d_model" : 256,
+                      "heads" : 8,
+                      "enc" : 4,
+                      "dec" : 4,
+                      "d_ff" : 256,
+                      "dropout" : 0.1
+                    }
+  },
+  'scaling_2_SGD_e10' : {
+    "device" : "cuda",
+    "network" : "scaling",
+    "epochs" : 10,
+    "batch" : 2,
+    "phase" : True,
+    "optimizer" : "SGD",
+    "lr" : 0.01,
+    "momentum" : 0,
+    "sample_rate" : 16000,
+    "n_fft" : 512,
+    "frame_s" : 0.025,
+    "stride_s" : 0.01,
+    "loss_mse" :  {
+                    "mode" : "scale",
+                    "weight" : 1
+                  },
+    "loss_snr" : 0.1,
+    "transformer" : {
+                      "d_model" : 256,
+                      "heads" : 8,
+                      "enc" : 4,
+                      "dec" : 4,
+                      "d_ff" : 256,
+                      "dropout" : 0.1
+                    }
+  },
+  'scaling_2_e10' : {
+    "device" : "cuda",
+    "network" : "scaling",
+    "epochs" : 10,
+    "batch" : 2,
+    "phase" : True,
+    "optimizer" : "Adam",
+    "lr" : 0.01,
+    "momentum" : 0,
+    "sample_rate" : 16000,
+    "n_fft" : 512,
+    "frame_s" : 0.025,
+    "stride_s" : 0.01,
+    "loss_mse" :  {
+                    "mode" : "scale",
+                    "weight" : 1
+                  },
+    "loss_snr" : 0.1,
+    "transformer" : {
+                      "d_model" : 256,
+                      "heads" : 8,
+                      "enc" : 4,
+                      "dec" : 4,
+                      "d_ff" : 256,
+                      "dropout" : 0.1
+                    }
+  },
+
+  # Exploration STFT
+  'scaling_2_SGD_fft_1024' : {
+    "device" : "cuda",
+    "network" : "scaling",
+    "epochs" : 1,
+    "batch" : 2,
+    "phase" : True,
+    "optimizer" : "SGD",
+    "lr" : 0.01,
+    "momentum" : 0,
+    "sample_rate" : 16000,
+    "n_fft" : 1024,
+    "frame_s" : 0.025,
+    "stride_s" : 0.01,
+    "loss_mse" :  {
+                    "mode" : "scale",
+                    "weight" : 1
+                  },
+    "loss_snr" : 0.1,
+    "transformer" : {
+                      "d_model" : 256,
+                      "heads" : 8,
+                      "enc" : 4,
+                      "dec" : 4,
+                      "d_ff" : 256,
+                      "dropout" : 0.1
+                    }
+  },
+  'scaling_2_SGD_fft_256' : {
+    "device" : "cuda",
+    "network" : "scaling",
+    "epochs" : 1,
+    "batch" : 2,
+    "phase" : True,
+    "optimizer" : "SGD",
+    "lr" : 0.01,
+    "momentum" : 0,
+    "sample_rate" : 16000,
+    "n_fft" : 256,
+    "frame_s" : 0.016,
+    "stride_s" : 0.01,
+    "loss_mse" :  {
+                    "mode" : "scale",
+                    "weight" : 1
+                  },
+    "loss_snr" : 0.1,
+    "transformer" : {
+                      "d_model" : 256,
+                      "heads" : 8,
+                      "enc" : 4,
+                      "dec" : 4,
+                      "d_ff" : 256,
+                      "dropout" : 0.1
+                    }
+  },
+  'scaling_2_SGD_fft_1024_05_02' : {
+    "device" : "cuda",
+    "network" : "scaling",
+    "epochs" : 1,
+    "batch" : 2,
+    "phase" : True,
+    "optimizer" : "SGD",
+    "lr" : 0.01,
+    "momentum" : 0,
+    "sample_rate" : 16000,
+    "n_fft" : 1024,
+    "frame_s" : 0.05,
+    "stride_s" : 0.02,
+    "loss_mse" :  {
+                    "mode" : "scale",
+                    "weight" : 1
+                  },
+    "loss_snr" : 0.1,
+    "transformer" : {
+                      "d_model" : 256,
+                      "heads" : 8,
+                      "enc" : 4,
+                      "dec" : 4,
+                      "d_ff" : 256,
+                      "dropout" : 0.1
+                    }
+  },
+
+  # Exploration - scaling_2_SGD
+  'scaling_2_SGD_large' : {
+    "device" : "cuda",
+    "network" : "scaling",
+    "epochs" : 1,
+    "batch" : 1,
+    "phase" : True,
+    "optimizer" : "SGD",
+    "lr" : 0.01,
+    "momentum" : 0,
+    "sample_rate" : 16000,
+    "n_fft" : 512,
+    "frame_s" : 0.025,
+    "stride_s" : 0.01,
+    "loss_mse" :  {
+                    "mode" : "scale",
+                    "weight" : 1
+                  },
+    "loss_snr" : 0.1,
+    "transformer" : {
+                  "d_model" : 512,
+                  "heads" : 8,
+                  "enc" : 6,
+                  "dec" : 6,
+                  "d_ff" : 256,
+                  "dropout" : 0.1
+                }
+  },
+  'scaling_2_SGD_snr0_2' : {
+    "device" : "cuda",
+    "network" : "scaling",
+    "epochs" : 1,
+    "batch" : 2,
+    "phase" : True,
+    "optimizer" : "SGD",
+    "lr" : 0.01,
+    "momentum" : 0,
+    "sample_rate" : 16000,
+    "n_fft" : 512,
+    "frame_s" : 0.025,
+    "stride_s" : 0.01,
+    "loss_mse" :  {
+                    "mode" : "scale",
+                    "weight" : 1
+                  },
+    "loss_snr" : 0.2,
+    "transformer" : {
+                      "d_model" : 256,
+                      "heads" : 8,
+                      "enc" : 4,
+                      "dec" : 4,
+                      "d_ff" : 256,
+                      "dropout" : 0.1
+                    }
+  },
+  'scaling_2_SGD_mse0_5' : {
+    "device" : "cuda",
+    "network" : "scaling",
+    "epochs" : 1,
+    "batch" : 2,
+    "phase" : True,
+    "optimizer" : "SGD",
+    "lr" : 0.01,
+    "momentum" : 0,
+    "sample_rate" : 16000,
+    "n_fft" : 512,
+    "frame_s" : 0.025,
+    "stride_s" : 0.01,
+    "loss_mse" :  {
+                    "mode" : "scale",
+                    "weight" : 0.5
+                  },
+    "loss_snr" : 0.1,
+    "transformer" : {
+                      "d_model" : 256,
+                      "heads" : 8,
+                      "enc" : 4,
+                      "dec" : 4,
+                      "d_ff" : 256,
+                      "dropout" : 0.1
+                    }
+  },
+  'scaling_2_SGD_e3' : {
+    "device" : "cuda",
+    "network" : "scaling",
+    "epochs" : 3,
+    "batch" : 2,
+    "phase" : True,
+    "optimizer" : "SGD",
+    "lr" : 0.01,
+    "momentum" : 0,
+    "sample_rate" : 16000,
+    "n_fft" : 512,
+    "frame_s" : 0.025,
+    "stride_s" : 0.01,
+    "loss_mse" :  {
+                    "mode" : "scale",
+                    "weight" : 1
+                  },
+    "loss_snr" : 0.1,
+    "transformer" : {
+                      "d_model" : 256,
+                      "heads" : 8,
+                      "enc" : 4,
+                      "dec" : 4,
+                      "d_ff" : 256,
+                      "dropout" : 0.1
+                    }
+  },
+  'scaling_2_SGD_large_e3' : {
+    "device" : "cuda",
+    "network" : "scaling",
+    "epochs" : 3,
+    "batch" : 1,
+    "phase" : True,
+    "optimizer" : "SGD",
+    "lr" : 0.01,
+    "momentum" : 0,
+    "sample_rate" : 16000,
+    "n_fft" : 512,
+    "frame_s" : 0.025,
+    "stride_s" : 0.01,
+    "loss_mse" :  {
+                    "mode" : "scale",
+                    "weight" : 1
+                  },
+    "loss_snr" : 0.1,
+    "transformer" : {
+                  "d_model" : 512,
+                  "heads" : 8,
+                  "enc" : 6,
+                  "dec" : 6,
+                  "d_ff" : 256,
+                  "dropout" : 0.1
+                }
+  },
+
+
 
   # Exploration - baseline
 
