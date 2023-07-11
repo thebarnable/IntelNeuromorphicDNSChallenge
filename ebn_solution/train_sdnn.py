@@ -162,6 +162,22 @@ Params = Union[Dict, Tuple, List]
 
 ## functions
 @jit
+def si_snr_jax(target, estimate):
+    # zero mean to ensure scale invariance
+    s_target = target - jnp.mean(target, axis=-1, keepdims=True)
+    s_estimate = estimate - jnp.mean(estimate, axis=-1, keepdims=True)
+
+    # <s, s'> / ||s||**2 * s
+    pair_wise_dot = jnp.sum(s_target * s_estimate, axis=-1, keepdims=True)
+    s_target_norm = jnp.sum(s_target ** 2, axis=-1, keepdims=True)
+    pair_wise_proj = pair_wise_dot * s_target / s_target_norm
+
+    e_noise = s_estimate - pair_wise_proj
+
+    pair_wise_sdr = jnp.sum(pair_wise_proj ** 2, axis=-1) / (jnp.sum(e_noise ** 2, axis=-1) + 1e-8)
+    return 10 * jnp.log10(pair_wise_sdr + 1e-8)
+
+@jit
 def loss_mse_reg_default( # Default helper from Rockpool for reservoir nets
     params: Params,                     # Set of packed parameters
     states_t: Dict[str, jnp.ndarray],    # Set of packed state values
@@ -177,7 +193,42 @@ def loss_mse_reg_default( # Default helper from Rockpool for reservoir nets
     w_res_norm = reg_l2_rec * jnp.nanmean(params["w_recurrent"] ** 2)  # punish large w_rec
     return mse + w_res_norm + tau_loss
 
+@jit
+def loss_mse_baseline( # Default helper from Rockpool for reservoir nets
+    params: Params,                      # Set of packed parameters
+    states_t: Dict[str, jnp.ndarray],    # Set of packed state values
+    output_batch_t: jnp.ndarray,         # Output rasterised time series [TxO]
+    target_batch_t: jnp.ndarray,         # Target rasterised time series [TxO]
+    lambda_mse: float = 0.001            # Factor when combining loss, on mean-squared error term
+) -> float:
+    mse = lambda_mse * jnp.nanmean((output_batch_t - target_batch_t) ** 2)  # output-target MSE loss
+    snr_loss = 100 - jnp.nanmean(si_snr_jax(output_batch_t.squeeze(), target_batch_t.squeeze()))
+    return mse + snr_loss
+
+@jit
+def loss_mse_baseline_reg( # Default helper from Rockpool for reservoir nets
+    params: Params,                      # Set of packed parameters
+    states_t: Dict[str, jnp.ndarray],    # Set of packed state values
+    output_batch_t: jnp.ndarray,         # Output rasterised time series [TxO]
+    target_batch_t: jnp.ndarray,         # Target rasterised time series [TxO]
+    min_tau: float,                     # Minimum time constant
+    lambda_mse: float = 1.0,            # Factor when combining loss, on mean-squared error term
+    reg_tau: float = 10000.0,           # Factor when combining loss, on minimum time constant limit
+    reg_l2_rec: float = 1.0,            # Factor when combining loss, on L2-norm term of recurrent weights
+    reg_snr: float = 1000.0,            # Factor for SNR loss
+) -> float:
+    mse = lambda_mse * jnp.nanmean((output_batch_t - target_batch_t) ** 2)  # output-target MSE loss
+    tau_loss = reg_tau * jnp.nanmean(jnp.where(params["tau"] < min_tau, jnp.exp(-(params["tau"] - min_tau)), 0))  # punish tau < min_tau
+    w_res_norm = reg_l2_rec * jnp.nanmean(params["w_recurrent"] ** 2)  # punish large w_rec
+    snr_loss = reg_snr*(100 - jnp.nanmean(si_snr_jax(output_batch_t, target_batch_t)))
+    return mse + snr_loss + w_res_norm + tau_loss
+
 loss_mse_reg_default_params = {"lambda_mse": 1.0, "reg_tau": 10000.0, "reg_l2_rec": 1.0, "min_tau": 1e-3 * 11}
+loss_mse_baseline_params = {"lambda_mse": 0.001}
+loss_mse_baseline_reg_params = {"lambda_mse": 1.0, "reg_tau": 10000.0, "reg_l2_rec": 1.0, "min_tau": 1e-3 * 11, "reg_snr": 1000.0}
+
+adam_params = {"step_size": 1e-4}
+sgd_params = {"step_size": 1e-4}
 
 # Networks
 class Baseline(torch.nn.Module):
@@ -288,10 +339,10 @@ def train_ebn(args):
                                                         clean,
                                                         is_first = is_first,
                                                         batch_axis = batch_axis,
-                                                        loss_fcn = loss_mse_reg_default,
-                                                        loss_params = loss_mse_reg_default_params,
-                                                        optimizer = jopt.adam,
-                                                        opt_params = {"step_size": 1e-4})
+                                                        loss_fcn = globals()[args.loss], #loss_mse_reg_default
+                                                        loss_params = globals()[args.loss_params], #loss_mse_reg_default_params,
+                                                        optimizer = getattr(jopt, args.opt),
+                                                        opt_params = globals()[args.opt_params])
             stats.training.loss_sum += loss.item() # track running mean over loss
 
             # evolve net with inputs again to perform inference -> EDIT: recover inference results from train_output_target, hacked into Rockpool
@@ -316,6 +367,9 @@ def train_ebn(args):
             # print loss & snr to tensorboard
             writer.add_scalar('Loss/train', stats.training.loss, i)
             writer.add_scalar('SI-SNR/train', stats.training.accuracy, i)
+            
+            if i%100 == 0:
+                net.save_layer(trained_folder + F"/network_{i}.json")
         
         t_val_st = time.time()
         for i, (noisy, clean, noise) in enumerate(validation_loader):
@@ -337,10 +391,10 @@ def train_ebn(args):
                                         is_first = True,
                                         init_only = True,
                                         batch_axis = batch_axis,
-                                        loss_fcn = loss_mse_reg_default,
-                                        loss_params = loss_mse_reg_default_params,
-                                        optimizer = jopt.adam,
-                                        opt_params = {"step_size": 1e-4})
+                                        loss_fcn = globals()[args.loss],
+                                        loss_params = globals()[args.loss_params],
+                                        optimizer = getattr(jopt, args.opt),
+                                        opt_params = globals()[args.opt_params])
             
             # evolve net with inputs again to perform inference
             denoised, new_state, states_t = net.evolve_directly(noisy) # = rate_jax::RecRateEulerJax::_evolve_functional::evol_func::_get_rec_evolve_jit::rec_evolve_jit
@@ -358,17 +412,13 @@ def train_ebn(args):
             total = len(validation_loader.dataset)
             stats.print(epoch, i, None, [f'Valid: {processed}/{total} ({100.0 * processed / total:.0f}%), time since val start: {time.time() - t_val_st:.2f}s'])
 
-            return
-
-        #writer.add_scalar('Loss/train', stats.training.loss, epoch)
         writer.add_scalar('Loss/valid', stats.validation.loss, epoch)
-        #writer.add_scalar('SI-SNR/train', stats.training.accuracy, epoch)
         writer.add_scalar('SI-SNR/valid', stats.validation.accuracy, epoch)
 
         # stats.update()
         # stats.plot(path=trained_folder + '/')
         if stats.validation.best_accuracy is True:
-            net.save_layer("net.json")
+            net.save_layer(trained_folder + "/network_best.json")
         stats.save(trained_folder + '/')
 
     # net.load_state_dict(torch.load(trained_folder + '/network.pt'))
@@ -545,7 +595,7 @@ if __name__ == '__main__':
                         type=float,
                         default=10,
                         help='gradient clipping limit')
-    parser.add_argument('-exp',
+    parser.add_argument('-id',
                         type=str,
                         default='',
                         help='experiment differentiater string')
@@ -565,25 +615,36 @@ if __name__ == '__main__':
                         type=str,
                         default='runs/',
                         help='results path')
+    parser.add_argument('-opt',
+                        type=str,
+                        default='adam',
+                        help='optimizer function (as defined in jax::optimizers.py)')
+    parser.add_argument('-loss',
+                        type=str,
+                        default='loss_mse_reg_default',
+                        help='loss function (as defined in train_sdnn.py)')
 
     args = parser.parse_args()
 
-    identifier = args.exp
+    # set seeds
     if args.seed is not None:
         torch.manual_seed(args.seed)
         np.random.seed(args.seed)
         jax.random.PRNGKey(args.seed)
         random.seed(args.seed)
-        #identifier += '_{}{}'.format(args.optim, args.seed)
 
-    trained_folder = 'Trained' + identifier
-    logs_folder = 'Logs' + identifier
-    print(trained_folder)
-    writer = SummaryWriter(args.out + identifier)
+    # misc param parsing
+    args.loss_params = args.loss + "_params"
+    args.opt_params = args.opt + "_params"
+    if args.id == "":
+        args.id = datetime.today().strftime('exp_%Y%m%d')
+
+    # setup results folders in args.out + args.id
+    trained_folder = os.path.abspath(args.out + "/" + args.id)
+    print(F"Starting experiment {args.id}. Results in {trained_folder}.")
+    writer = SummaryWriter(trained_folder)
 
     os.makedirs(trained_folder, exist_ok=True)
-    os.makedirs(logs_folder, exist_ok=True)
-
     with open(trained_folder + '/args.txt', 'wt') as f:
         for arg, value in sorted(vars(args).items()):
             f.write('{} : {}\n'.format(arg, value))
