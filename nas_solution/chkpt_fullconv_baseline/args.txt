@@ -1,0 +1,14 @@
+b : 128
+clip : 10
+dmax : 64
+epoch : 200
+gpu : [0]
+lam : 0.001
+lr : 0.01
+n_fft : 512
+out_delay : 0
+path : /mnt/data4tb/stadtmann/dns_challenge_4/datasets_fullband/
+scale_grad : 0.8
+seed : None
+tau_grad : 0.1
+threshold : 0.1

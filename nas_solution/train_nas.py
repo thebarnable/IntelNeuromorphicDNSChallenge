@@ -22,6 +22,7 @@ from datetime import datetime
 ct_str = datetime.now().strftime("%Y%m%d")
 
 import pdb
+import itertools
 
 def collate_fn(batch):
     noisy, clean, noise = [], [], []
@@ -219,13 +220,35 @@ if __name__ == '__main__':
     # kernel_sizes = [3,5]
     # channel_sizes = [32,64,128,256]
     # nn_depth = [2,3,4,5]
-    kernel_sizes = [5,3]
-    channel_sizes = [256,128,64,32]
-    nn_depth = [5,4,3,2]
 
-    for kk,cc,dd in zip(kernel_sizes,channel_sizes,nn_depth):
+    # kernel_sizes = [5,3]
+    # channel_sizes = [256,128,64,32]
+    # nn_depth = [5,4,3,2]
 
-        cfg_str = 'k' + str(kk) + 'c' + str(cc) + 'd' + str(dd)
+    #for kk,cc,dd in list(itertools.product(kernel_sizes,channel_sizes,nn_depth)):
+
+    kk = 5
+    cc = 256
+    dd = 5
+
+    opt_fcns = [torch.optim.Adadelta,
+               torch.optim.Adagrad,
+               torch.optim.Adam,
+               torch.optim.AdamW,
+               torch.optim.SparseAdam,
+               torch.optim.Adamax,
+               torch.optim.ASGD,
+               #torch.optim.LBFGS,
+               torch.optim.NAdam,
+               torch.optim.RAdam,
+               torch.optim.RMSprop,
+               torch.optim.Rprop,
+               torch.optim.SGD]
+    lrs = [0.1,0.01,0.001,0.0001,0.00001]
+
+    for opt_fcn,lr in list(itertools.product(opt_fcns,lrs)):
+
+        cfg_str = 'k' + str(kk) + 'c' + str(cc) + 'd' + str(dd) + '_optfcn' + str(opt_fcn) + 'lr' + str(lr)
 
         print(f'##### Start config {cfg_str} #####')
        
@@ -265,9 +288,11 @@ if __name__ == '__main__':
         #pdb.set_trace()
 
         # Define optimizer module.
-        optimizer = torch.optim.RAdam(net.parameters(),
-                                    lr=args.lr,
-                                    weight_decay=1e-5)
+        # optimizer = torch.optim.RAdam(net.parameters(),
+        #                             lr=args.lr,
+        #                             weight_decay=0e-5)
+
+        optimizer = opt_fcn(net.parameters(),lr=lr)
 
         train_set = DNSAudio(root=args.path + 'training_set/')
         validation_set = DNSAudio(root=args.path + 'validation_set/')
