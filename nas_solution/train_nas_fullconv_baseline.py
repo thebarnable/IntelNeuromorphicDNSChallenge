@@ -196,7 +196,7 @@ if __name__ == '__main__':
                         help='optimizer function (as defined in jax::optimizers.py)')    
     parser.add_argument('-seed',
                         type=int,
-                        default=None,
+                        default=0,
                         help='random seed of the experiment')
     parser.add_argument('-epoch',
                         type=int,
@@ -212,9 +212,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # set seeds
-    if args.seed is not None:
-        torch.manual_seed(args.seed)
-        # identifier += '_{}{}'.format(args.optim, args.seed)
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    # identifier += '_{}{}'.format(args.optim, args.seed)
 
     # setup results folders in args.out + args.id
     if args.id == "":
