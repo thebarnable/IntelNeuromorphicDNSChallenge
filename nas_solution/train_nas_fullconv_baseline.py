@@ -181,10 +181,18 @@ if __name__ == '__main__':
                         type=float,
                         default=10,
                         help='gradient clipping limit')
-    # parser.add_argument('-exp',
-    #                     type=str,
-    #                     default='',
-    #                     help='experiment differentiater string')
+    parser.add_argument('-id',
+                        type=str,
+                        default='',
+                        help='experiment differentiater string')
+    parser.add_argument('-out',
+                        type=str,
+                        default='runs/',
+                        help='results path')    
+    parser.add_argument('-opt',
+                        type=str,
+                        default='adam',
+                        help='optimizer function (as defined in jax::optimizers.py)')    
     parser.add_argument('-seed',
                         type=int,
                         default=None,
@@ -205,61 +213,22 @@ if __name__ == '__main__':
         torch.manual_seed(args.seed)
         # identifier += '_{}{}'.format(args.optim, args.seed)
 
-    exp_prefix = ct_str + '_loh_nas_runs/'
-    os.makedirs(exp_prefix, exist_ok=True)
-    tensorboard_path = '/mnt/data4tb/stadtmann/dns_challenge_4/tensorboard_logs/' + exp_prefix
-    os.makedirs(tensorboard_path, exist_ok=True)
-    #os.chmod(tensorboard_path,0o777)
+    # setup results folders in args.out + args.id
+    if args.id == "":
+        args.id = datetime.today().strftime('exp_%Y%m%d')
+    trained_folder = os.path.abspath(args.out + "/" + args.id)
+    print(F"Starting experiment {args.id}. Results in {trained_folder}.")
+    
+    writer = SummaryWriter(trained_folder)
+    os.makedirs(trained_folder, exist_ok=True)
 
-    with open(exp_prefix + 'args.txt', 'wt') as f:
+    with open(trained_folder + '/args.txt', 'wt') as f:
         for arg, value in sorted(vars(args).items()):
             f.write('{} : {}\n'.format(arg, value))
-    
-    print(f'##### Start NAS run #####')
-
-    # kernel_sizes = [3,5]
-    # channel_sizes = [32,64,128,256]
-    # nn_depth = [2,3,4,5]
-
-    # kernel_sizes = [5,3]
-    # channel_sizes = [256,128,64,32]
-    # nn_depth = [5,4,3,2]
-
-    #for kk,cc,dd in list(itertools.product(kernel_sizes,channel_sizes,nn_depth)):
 
     kk = 5
     cc = 256
     dd = 5
-
-    # opt_fcns = [torch.optim.Adadelta,
-    #            torch.optim.Adagrad,
-    #            torch.optim.Adam,
-    #            torch.optim.AdamW,
-    #            torch.optim.SparseAdam,
-    #            torch.optim.Adamax,
-    #            torch.optim.ASGD,
-    #            #torch.optim.LBFGS,
-    #            torch.optim.NAdam,
-    #            torch.optim.RAdam,
-    #            torch.optim.RMSprop,
-    #            torch.optim.Rprop,
-    #            torch.optim.SGD]
-    # lrs = [0.1,0.01,0.001,0.0001,0.00001]
-
-    # for opt_fcn,lr in list(itertools.product(opt_fcns,lrs)):
-
-    cfg_str = 'k' + str(kk) + 'c' + str(cc) + 'd' + str(dd) + '_optfcn' + '_Adam' + 'lr' + '_customschedule'
-
-    print(f'##### Start config {cfg_str} #####')
-    
-    trained_folder = exp_prefix + 'trained_' + cfg_str
-    #logs_folder = exp_prefix + 'logs_' + cfg_str
-    print(trained_folder)
-    writer = SummaryWriter(tensorboard_path + cfg_str + '/')
-    #os.chmod(tensorboard_path + cfg_str + '/',0o777)
-
-    os.makedirs(trained_folder, exist_ok=True)
-    #os.makedirs(logs_folder, exist_ok=True)
 
     lam = args.lam
 
@@ -285,14 +254,7 @@ if __name__ == '__main__':
                                     device_ids=args.gpu)
         module = net.module
 
-    #pdb.set_trace()
-
-    # Define optimizer module.
-    # optimizer = torch.optim.RAdam(net.parameters(),
-    #                             lr=args.lr,
-    #                             weight_decay=0e-5)
-
-    optimizer = torch.optim.Adam(net.parameters(),lr=0.001)
+    optimizer = torch.optim.Adam(net.parameters(), lr=0.001)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50,100,150], gamma=0.1)
 
     train_set = DNSAudio(root=args.path + 'training_set/')
