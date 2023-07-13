@@ -9,6 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 import torch
+import torchaudio
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -205,10 +206,12 @@ if __name__ == '__main__':
                         type=str,
                         default='/mnt/data4tb/stadtmann/dns_challenge_4/datasets_fullband/',
                         help='dataset path')
+    
+    parser.add_argument("-mse_loss_type", type=str, default = "stft", choices = ["stft", "mfcc"], help = "Which coefficients to use for MSE part of the loss function")
 
     args = parser.parse_args()
 
-    # identifier = args.exp
+    # set seeds
     if args.seed is not None:
         torch.manual_seed(args.seed)
         # identifier += '_{}{}'.format(args.optim, args.seed)
@@ -226,9 +229,12 @@ if __name__ == '__main__':
         for arg, value in sorted(vars(args).items()):
             f.write('{} : {}\n'.format(arg, value))
 
+    # set misc parameters
     kk = 5
     cc = 256
     dd = 5
+
+    n_mfcc = 50
 
     lam = args.lam
 
@@ -236,6 +242,16 @@ if __name__ == '__main__':
     device = torch.device('cuda:{}'.format(args.gpu[0]))
 
     out_delay = args.out_delay
+
+    if args.mse_loss_type == "mfcc":
+        loss_transf = torchaudio.transforms.MFCC(n_mfcc = n_mfcc, 
+                                                melkwargs = {"window_fn" : lambda n:torch.hann_window(n, device = device), 
+                                                            "n_fft" : 512, 
+                                                            "hop_length" : 128}).to(device)
+    else:
+        loss_transf = lambda n: n
+
+
     if len(args.gpu) == 1:
         net = Network(kk,cc,dd,
                     args.threshold,
@@ -278,6 +294,8 @@ if __name__ == '__main__':
     stats = slayer.utils.LearningStats(accuracy_str='SI-SNR',
                                     accuracy_unit='dB')
 
+    print("Starting training")
+    t_all = datetime.now()
     for epoch in range(args.epoch):
         t_st = datetime.now()
         for i, (noisy, clean, noise) in enumerate(train_loader):
@@ -297,7 +315,7 @@ if __name__ == '__main__':
             clean_rec = stft_mixer(denoised_abs, noisy_arg, args.n_fft)
 
             score = si_snr(clean_rec, clean)
-            loss = lam * F.mse_loss(denoised_abs, clean_abs) + (100 - torch.mean(score))
+            loss = lam * F.mse_loss(loss_transf(denoised_abs), loss_transf(clean_abs)) + (100 - torch.mean(score))
 
             assert torch.isnan(loss) == False
 
@@ -320,12 +338,12 @@ if __name__ == '__main__':
             processed = i * train_loader.batch_size
             total = len(train_loader.dataset)
             time_elapsed = (datetime.now() - t_st).total_seconds()
+            time_elapsed_total = (datetime.now() - t_all).total_seconds()
             samples_sec = time_elapsed / (i + 1) / train_loader.batch_size
-            # header_list = [f'Train: [{processed}/{total} '
-            #             f'({100.0 * processed / total:.0f}%)]']
-            # stats.print(epoch, i, samples_sec, header=header_list)
+            stats.print(epoch, i, None, [f'Train: {processed}/{total} ({100.0 * processed / total:.0f}%), epoch time: {time_elapsed:.2f}s, total time: {time_elapsed_total:.2f}s'])
+            if i==3:
+                exit(1)
 
-            #print(f'Epoch: {epoch}, It: {i}, samples_sec: {samples_sec}, loss: {stats.training.loss}, si-snr: {stats.training.accuracy}')
 
         t_st = datetime.now()
         for i, (noisy, clean, noise) in enumerate(validation_loader):
@@ -346,7 +364,7 @@ if __name__ == '__main__':
                 clean_rec = stft_mixer(denoised_abs, noisy_arg, args.n_fft)
                 
                 score = si_snr(clean_rec, clean)
-                loss = lam * F.mse_loss(denoised_abs, clean_abs) + (100 - torch.mean(score))
+                loss = lam * F.mse_loss(loss_transf(denoised_abs), loss_transf(clean_abs)) + (100 - torch.mean(score))
                 stats.validation.correct_samples += torch.sum(score).item()
                 stats.validation.loss_sum += loss.item()
                 stats.validation.num_samples += noisy.shape[0]
@@ -354,13 +372,8 @@ if __name__ == '__main__':
                 processed = i * validation_loader.batch_size
                 total = len(validation_loader.dataset)
                 time_elapsed = (datetime.now() - t_st).total_seconds()
-                samples_sec = time_elapsed / \
-                    (i + 1) / validation_loader.batch_size
-                # header_list = [f'Valid: [{processed}/{total} '
-                #             f'({100.0 * processed / total:.0f}%)]']
-                # stats.print(epoch, i, samples_sec, header=header_list)
-
-                #print(f'Epoch: {epoch}, It: {i}, samples_sec: {samples_sec}, loss: {stats.validation.loss}, si-snr: {stats.validation.accuracy}')
+                samples_sec = time_elapsed / (i + 1) / validation_loader.batch_size
+                stats.print(epoch, i, None, [f'Valid: {processed}/{total} ({100.0 * processed / total:.0f}%), time since val start: {time_elapsed:.2f}s'])
 
         writer.add_scalar('Loss/train', stats.training.loss, epoch)
         writer.add_scalar('Loss/valid', stats.validation.loss, epoch)
