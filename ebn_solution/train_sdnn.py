@@ -202,7 +202,7 @@ def loss_mse_baseline( # Default helper from Rockpool for reservoir nets
     lambda_mse: float = 0.001            # Factor when combining loss, on mean-squared error term
 ) -> float:
     mse = lambda_mse * jnp.nanmean((output_batch_t - target_batch_t) ** 2)  # output-target MSE loss
-    snr_loss = 100 - jnp.nanmean(si_snr_jax(output_batch_t.squeeze(), target_batch_t.squeeze()))
+    snr_loss = 100 - jnp.nanmean(si_snr_jax(target_batch_t.squeeze(), output_batch_t.squeeze()))
     return mse + snr_loss
 
 @jit
@@ -220,7 +220,7 @@ def loss_mse_baseline_reg( # Default helper from Rockpool for reservoir nets
     mse = lambda_mse * jnp.nanmean((output_batch_t - target_batch_t) ** 2)  # output-target MSE loss
     tau_loss = reg_tau * jnp.nanmean(jnp.where(params["tau"] < min_tau, jnp.exp(-(params["tau"] - min_tau)), 0))  # punish tau < min_tau
     w_res_norm = reg_l2_rec * jnp.nanmean(params["w_recurrent"] ** 2)  # punish large w_rec
-    snr_loss = reg_snr*(100 - jnp.nanmean(si_snr_jax(output_batch_t, target_batch_t)))
+    snr_loss = reg_snr*(100 - jnp.nanmean(si_snr_jax(target_batch_t, output_batch_t)))
     return mse + snr_loss + w_res_norm + tau_loss
 
 loss_mse_reg_default_params = {"lambda_mse": 1.0, "reg_tau": 10000.0, "reg_l2_rec": 1.0, "min_tau": 1e-3 * 11}
