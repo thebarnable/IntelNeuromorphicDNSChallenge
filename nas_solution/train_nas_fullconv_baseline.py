@@ -203,7 +203,7 @@ if __name__ == '__main__':
                         help='number of epochs to run')
     parser.add_argument('-path',
                         type=str,
-                        default='../../data/MicrosoftDNS_4_ICASSP/',
+                        default='/mnt/data4tb/stadtmann/dns_challenge_4/datasets_fullband/',
                         help='dataset path')
 
     args = parser.parse_args()
@@ -215,7 +215,7 @@ if __name__ == '__main__':
 
     # setup results folders in args.out + args.id
     if args.id == "":
-        args.id = datetime.today().strftime('exp_%Y%m%d')
+        args.id = datetime.today().strftime('exp_%Y%m%d_%H%M%S')
     trained_folder = os.path.abspath(args.out + "/" + args.id)
     print(F"Starting experiment {args.id}. Results in {trained_folder}.")
     
@@ -275,13 +275,6 @@ if __name__ == '__main__':
 
     base_stats = slayer.utils.LearningStats(accuracy_str='SI-SNR',
                                             accuracy_unit='dB')
-
-    # print()
-    # print('Base Statistics')
-    # nop_stats(train_loader, base_stats, base_stats.training)
-    # nop_stats(validation_loader, base_stats, base_stats.validation)
-    # print()
-
     stats = slayer.utils.LearningStats(accuracy_str='SI-SNR',
                                     accuracy_unit='dB')
 
