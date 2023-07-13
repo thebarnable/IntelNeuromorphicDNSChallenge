@@ -238,8 +238,12 @@ if __name__ == '__main__':
 
     lam = args.lam
 
-    print('Using GPUs {}'.format(args.gpu))
-    device = torch.device('cuda:{}'.format(args.gpu[0]))
+    if torch.cuda.device_count() > 0:
+        print('Using GPUs {}'.format(args.gpu))
+        device = torch.device('cuda:{}'.format(args.gpu[0]))
+    else:
+        print('No GPU found. Defaulting to CPU')
+        device = torch.device('cpu')
 
     out_delay = args.out_delay
 
