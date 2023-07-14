@@ -25,6 +25,47 @@ ct_str = datetime.now().strftime("%Y%m%d")
 import pdb
 import itertools
 
+def calculate_filter_banks(n_fft, n_filter_banks, sample_rate, device):
+    with torch.no_grad():
+        f_l, f_u = 0, sample_rate/2
+        def m_fn(f): return 1125*np.log(1+f/700)
+        def m_inv_fn(m): return 700*(np.exp(m/1125) - 1)
+        m_vals = [(m_fn(f_u) - m_fn(f_l))/(n_filter_banks+1) * i + m_fn(f_l)
+                    for i in range(n_filter_banks+2)]
+        f_vals = [np.floor((m_inv_fn(m) * (n_fft + 1))/sample_rate)
+                    for m in m_vals]
+        H_vals = np.zeros((n_filter_banks, n_fft//2+1), dtype = np.float32)
+
+        map = {k: [] for k in range(n_fft//2+1)}
+        for i in range(1, n_filter_banks+1):
+            for k in range(n_fft//2+1):
+                if f_vals[i-1] < k <= f_vals[i]:
+                    H_vals[i-1, k] = (k-f_vals[i-1]) / \
+                        (f_vals[i]-f_vals[i-1])
+                    map[k].append(i-1)
+                if f_vals[i] < k < f_vals[i+1]:
+                    H_vals[i-1, k] = (f_vals[i+1]-k) / \
+                        (f_vals[i+1]-f_vals[i])
+                    map[k].append(i-1)
+
+        return torch.from_numpy(H_vals).to(device), map
+
+
+def reconstruct_wave_from_mfcc(n_fft, abs, phase, y_vals, y_vals_network, H_vals, map, inv_spec_transformation):
+    x_vals = torch.clone(abs)
+
+    for m in range(1, n_fft // 2):
+        val = 0
+        for i in range(len(map[m])):
+            val += (y_vals_network[:, map[m][i], :] - y_vals[:, map[m][i], :] + H_vals[map[m][i], m] * abs[:, m, :]) / H_vals[map[m][i], m]
+        
+        x_vals[:, m, :] = val/len(map[m])
+    x_vals[x_vals < 0] = 0
+
+
+    return inv_spec_transformation(torch.complex(x_vals * torch.cos(phase),
+                                x_vals * torch.sin(phase))), x_vals
+
 def collate_fn(batch):
     noisy, clean, noise = [], [], []
 
@@ -36,23 +77,98 @@ def collate_fn(batch):
     return torch.stack(noisy), torch.stack(clean), torch.stack(noise)
 
 
-def stft_splitter(audio, n_fft=512):
+def stft_splitter(audio, window, n_fft=512):
     with torch.no_grad():
         audio_stft = torch.stft(audio,
                                 n_fft=n_fft,
                                 onesided=True,
-                                return_complex=True)
+                                return_complex=True, window=window)
         return audio_stft.abs(), audio_stft.angle()
 
 
-def stft_mixer(stft_abs, stft_angle, n_fft=512):
+def stft_mixer(stft_abs, stft_angle, window, n_fft=512):
     return torch.istft(torch.complex(stft_abs * torch.cos(stft_angle),
                                         stft_abs * torch.sin(stft_angle)),
-                        n_fft=n_fft, onesided=True)
+                        n_fft=n_fft, onesided=True, window=window)
 
+class Baseline(torch.nn.Module):
+    def __init__(self, threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0, n_input = 257, n_hidden=512):
+        super().__init__()
+        self.stft_mean = 0.2
+        self.stft_var = 1.5
+        self.stft_max = 140
+        self.out_delay = out_delay
+
+        sigma_params = {  # sigma-delta neuron parameters
+            'threshold': threshold,   # delta unit threshold
+            'tau_grad': tau_grad,    # delta unit surrogate gradient relaxation parameter
+            'scale_grad': scale_grad,  # delta unit surrogate gradient scale parameter
+            'requires_grad': False,  # trainable threshold
+            'shared_param': True,   # layer wise threshold
+        }
+        sdnn_params = {
+            **sigma_params,
+            'activation': F.relu,  # activation function
+        }
+
+        self.input_quantizer = lambda x: slayer.utils.quantize(x, step=1 / 64)
+
+        self.blocks = torch.nn.ModuleList([
+            slayer.block.sigma_delta.Input(sdnn_params),
+            slayer.block.sigma_delta.Dense(
+                sdnn_params, n_input, n_hidden, weight_norm=False, delay=True, delay_shift=True),
+            slayer.block.sigma_delta.Dense(
+                sdnn_params, n_hidden, n_hidden, weight_norm=False, delay=True, delay_shift=True),
+            slayer.block.sigma_delta.Output(
+                sdnn_params, n_hidden, n_input, weight_norm=False),
+        ])
+
+        self.blocks[0].pre_hook_fx = self.input_quantizer
+
+        self.blocks[1].delay.max_delay = max_delay
+        self.blocks[2].delay.max_delay = max_delay
+
+    def forward(self, noisy):
+        x = noisy - self.stft_mean
+
+        for block in self.blocks:
+            x = block(x)
+
+        mask = torch.relu(x + 1)
+        return slayer.axon.delay(noisy, self.out_delay) * mask
+
+    def grad_flow(self, path):
+        # helps monitor the gradient flow
+        grad = [
+            b.synapse.grad_norm for b in self.blocks if hasattr(b, 'synapse')]
+
+        plt.figure()
+        plt.semilogy(grad)
+        plt.savefig(path + 'gradFlow.png')
+        plt.close()
+
+        return grad
+
+    def validate_gradients(self):
+        valid_gradients = True
+        for name, param in self.named_parameters():
+            if param.grad is not None:
+                valid_gradients = not (torch.isnan(param.grad).any()
+                                       or torch.isinf(param.grad).any())
+                if not valid_gradients:
+                    break
+        if not valid_gradients:
+            self.zero_grad()
+
+    def export_hdf5(self, filename):
+        # network export to hdf5 format
+        h = h5py.File(filename, 'w')
+        layer = h.create_group('layer')
+        for i, b in enumerate(self.blocks):
+            b.export_hdf5(layer.create_group(f'{i}'))
 
 class Network(torch.nn.Module):
-    def __init__(self,k,c,d,  threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0):
+    def __init__(self,inp,k,c,d,  threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0):
         super().__init__()
         self.stft_mean = 0.2
         self.stft_var = 1.5
@@ -74,7 +190,7 @@ class Network(torch.nn.Module):
         #     torch.nn.ReLU(inplace=True),
         # ])
         self.blocks = torch.nn.ModuleList([
-            torch.nn.Conv1d(257, c, kernel_size=k, padding='same', bias=False),
+            torch.nn.Conv1d(inp, c, kernel_size=k, padding='same', bias=False),
             torch.nn.BatchNorm1d(c),
             torch.nn.ReLU(inplace=True),
         ])
@@ -84,8 +200,8 @@ class Network(torch.nn.Module):
             self.blocks.append(torch.nn.BatchNorm1d(c))
             self.blocks.append(torch.nn.ReLU(inplace=True))
 
-        self.blocks.append(torch.nn.Conv1d(c, 257, kernel_size=k, padding='same', bias=False))
-        self.blocks.append(torch.nn.BatchNorm1d(257))
+        self.blocks.append(torch.nn.Conv1d(c, inp, kernel_size=k, padding='same', bias=False))
+        self.blocks.append(torch.nn.BatchNorm1d(inp))
         self.blocks.append(torch.nn.ReLU(inplace=True))
 
     def forward(self, noisy):
@@ -206,7 +322,17 @@ if __name__ == '__main__':
                         type=str,
                         default='/mnt/data4tb/stadtmann/dns_challenge_4/datasets_fullband/',
                         help='dataset path')
+    parser.add_argument('-baseline',
+                        action='store_true',
+                        help='use baseline SNN instead of CNN')
+    parser.add_argument('-cpu',
+                        action='store_true',
+                        help='force CPU usage even if GPU is available')
     
+    parser.add_argument("-n_mfcc", type=int, default=50, help="Number of MFCC components (only considered if transformation is mfcc or mse_loss_type is mfcc)")
+    parser.add_argument("-stft_window", type=str, choices=["hann", "hamming", "gaussian", "bartlett", "rectangle"],
+                        default="rectangle", help="window function for STFT (considered if transformation=stft or transformation=mfcc)")
+    parser.add_argument("-transformation", type=str, default="stft", choices=["stft", "mfcc"], help="transformation that is applied as encoding/decoding")
     parser.add_argument("-mse_loss_type", type=str, default = "stft", choices = ["stft", "mfcc"], help = "Which coefficients to use for MSE part of the loss function")
 
     args = parser.parse_args()
@@ -234,11 +360,9 @@ if __name__ == '__main__':
     cc = 256
     dd = 5
 
-    n_mfcc = 50
-
     lam = args.lam
 
-    if torch.cuda.device_count() > 0:
+    if torch.cuda.device_count() > 0 and not args.cpu:
         print('Using GPUs {}'.format(args.gpu))
         device = torch.device('cuda:{}'.format(args.gpu[0]))
     else:
@@ -247,32 +371,79 @@ if __name__ == '__main__':
 
     out_delay = args.out_delay
 
+    # set MFCC and/or STFT lambdas and params
+    window_fn = None  # treated as rectangular window function
+    window = None
+    if args.stft_window != 'rectangle':
+        window_fn = lambda n : getattr(torch, args.stft_window+'_window')(n, device=device)
+        window = window_fn(args.n_fft)
+    # if args.stft_window == "hann":
+    #     window_fn = lambda n : torch.hann_window(n, device=device)
+    # elif args.stft_window == "hamming":
+    #     window_fn = lambda n : torch.hamming_window(n, device=device)
+    # elif args.stft_window == "bartlett":
+    #     window_fn = lambda n : torch.bartlett_window(n, device=device)
+    
+    if args.transformation == "mfcc":
+        if window_fn == None:
+            window_fn_mfcc = lambda n : torch.hann_window(n, device=device)
+        else:
+            window_fn_mfcc = window_fn
+
+        spec_transformation = torchaudio.transforms.Spectrogram(
+            n_fft=args.n_fft, window_fn=window_fn_mfcc, power=None)
+        inv_spec_transformation = torchaudio.transforms.InverseSpectrogram(
+            n_fft=args.n_fft, window_fn=window_fn_mfcc)
+        
+        H_vals, map = calculate_filter_banks(args.n_fft, args.n_mfcc, 16000, device)
+
     if args.mse_loss_type == "mfcc":
-        loss_transf = torchaudio.transforms.MFCC(n_mfcc = n_mfcc, 
+        loss_transf = torchaudio.transforms.MFCC(n_mfcc = args.n_mfcc, 
                                                 melkwargs = {"window_fn" : lambda n:torch.hann_window(n, device = device), 
                                                             "n_fft" : 512, 
                                                             "hop_length" : 128}).to(device)
     else:
         loss_transf = lambda n: n
 
-
-    if len(args.gpu) == 1:
-        net = Network(kk,cc,dd,
-                    args.threshold,
-                    args.tau_grad,
-                    args.scale_grad,
-                    args.dmax,
-                    args.out_delay).to(device)
-        module = net
+    n_input = args.n_fft // 2 +1 if args.transformation == "stft" else args.n_mfcc
+    #n_hidden = args.n_fft if args.transformation == "stft" else int(args.n_mfcc * args.hidden_input_ratio)
+    if args.baseline:
+        n_hidden = args.n_fft if args.transformation == "stft" else int(args.n_mfcc * 2)
+        if len(args.gpu) == 1:
+            net = Baseline(args.threshold,
+                        args.tau_grad,
+                        args.scale_grad,
+                        args.dmax,
+                        args.out_delay,
+                        n_input, n_hidden).to(device)
+            module = net
+        else:
+            net = torch.nn.DataParallel(Baseline(args.threshold,
+                                                args.tau_grad,
+                                                args.scale_grad,
+                                                args.dmax,
+                                                args.out_delay,
+                                                n_input, n_hidden).to(device),
+                                        device_ids=args.gpu)
+            module = net.module
     else:
-        net = torch.nn.DataParallel(Network(kk,cc,dd,
-                                            args.threshold,
-                                            args.tau_grad,
-                                            args.scale_grad,
-                                            args.dmax,
-                                            args.out_delay).to(device),
-                                    device_ids=args.gpu)
-        module = net.module
+        if len(args.gpu) == 1:
+            net = Network(n_input,kk,cc,dd,
+                        args.threshold,
+                        args.tau_grad,
+                        args.scale_grad,
+                        args.dmax,
+                        args.out_delay).to(device)
+            module = net
+        else:
+            net = torch.nn.DataParallel(Network(n_input, kk,cc,dd,
+                                                args.threshold,
+                                                args.tau_grad,
+                                                args.scale_grad,
+                                                args.dmax,
+                                                args.out_delay).to(device),
+                                        device_ids=args.gpu)
+            module = net.module
 
     optimizer = torch.optim.Adam(net.parameters(), lr=0.001)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50,100,150], gamma=0.1)
@@ -284,13 +455,13 @@ if __name__ == '__main__':
                             batch_size=args.b,
                             shuffle=True,
                             collate_fn=collate_fn,
-                            num_workers=4,
+                            num_workers=1,
                             pin_memory=True)
     validation_loader = DataLoader(validation_set,
                                 batch_size=args.b,
                                 shuffle=True,
                                 collate_fn=collate_fn,
-                                num_workers=4,
+                                num_workers=1,
                                 pin_memory=True)
 
     base_stats = slayer.utils.LearningStats(accuracy_str='SI-SNR',
@@ -307,16 +478,35 @@ if __name__ == '__main__':
             noisy = noisy.to(device)
             clean = clean.to(device)
 
-            noisy_abs, noisy_arg = stft_splitter(noisy, args.n_fft)
-            clean_abs, clean_arg = stft_splitter(clean, args.n_fft)
+            if args.transformation == 'stft':
+                noisy_abs, noisy_arg = stft_splitter(noisy, window, args.n_fft)
+                clean_abs, clean_arg = stft_splitter(clean, window, args.n_fft)
 
-            denoised_abs = net(noisy_abs)
-            #pdb.set_trace()
-            noisy_arg = slayer.axon.delay(noisy_arg, out_delay)
-            clean_abs = slayer.axon.delay(clean_abs, out_delay)
-            clean = slayer.axon.delay(clean, args.n_fft // 4 * out_delay)
+                denoised_abs = net(noisy_abs)
+                #pdb.set_trace()
+                noisy_arg = slayer.axon.delay(noisy_arg, out_delay)
+                clean_abs = slayer.axon.delay(clean_abs, out_delay)
+                clean = slayer.axon.delay(clean, args.n_fft // 4 * out_delay)
 
-            clean_rec = stft_mixer(denoised_abs, noisy_arg, args.n_fft)
+                clean_rec = stft_mixer(denoised_abs, noisy_arg, window, args.n_fft)
+            elif args.transformation == "mfcc":
+                spectogram_noisy = spec_transformation(noisy)
+                spectogram_clean = spec_transformation(clean)
+
+                noisy_abs, noisy_arg = spectogram_noisy.abs(), spectogram_noisy.angle()
+                clean_abs, clean_arg = spectogram_clean.abs(), spectogram_clean.angle()
+
+                filter_banked = torch.matmul(H_vals, noisy_abs) + 1e-10
+                mfcc = torch.log(filter_banked)
+                
+                denoised_mfcc = net(mfcc)
+
+                noisy_arg = slayer.axon.delay(noisy_arg, out_delay)
+                clean_abs = slayer.axon.delay(clean_abs, out_delay)
+                clean = slayer.axon.delay(clean, args.n_fft // 4 * out_delay)
+
+                clean_rec, denoised_abs = reconstruct_wave_from_mfcc(args.n_fft, noisy_abs, noisy_arg, filter_banked, torch.exp(denoised_mfcc), H_vals, map, inv_spec_transformation)
+
 
             score = si_snr(clean_rec, clean)
             loss = lam * F.mse_loss(loss_transf(denoised_abs), loss_transf(clean_abs)) + (100 - torch.mean(score))
@@ -345,9 +535,6 @@ if __name__ == '__main__':
             time_elapsed_total = (datetime.now() - t_all).total_seconds()
             samples_sec = time_elapsed / (i + 1) / train_loader.batch_size
             stats.print(epoch, i, None, [f'Train: {processed}/{total} ({100.0 * processed / total:.0f}%), epoch time: {time_elapsed:.2f}s, total time: {time_elapsed_total:.2f}s'])
-            if i==3:
-                exit(1)
-
 
         t_st = datetime.now()
         for i, (noisy, clean, noise) in enumerate(validation_loader):
@@ -357,15 +544,15 @@ if __name__ == '__main__':
                 noisy = noisy.to(device)
                 clean = clean.to(device)
                 
-                noisy_abs, noisy_arg = stft_splitter(noisy, args.n_fft)
-                clean_abs, clean_arg = stft_splitter(clean, args.n_fft)
+                noisy_abs, noisy_arg = stft_splitter(noisy, window, args.n_fft)
+                clean_abs, clean_arg = stft_splitter(clean, window, args.n_fft)
 
                 denoised_abs = net(noisy_abs)
                 noisy_arg = slayer.axon.delay(noisy_arg, out_delay)
                 clean_abs = slayer.axon.delay(clean_abs, out_delay)
                 clean = slayer.axon.delay(clean, args.n_fft // 4 * out_delay)
 
-                clean_rec = stft_mixer(denoised_abs, noisy_arg, args.n_fft)
+                clean_rec = stft_mixer(denoised_abs, noisy_arg, window, args.n_fft)
                 
                 score = si_snr(clean_rec, clean)
                 loss = lam * F.mse_loss(loss_transf(denoised_abs), loss_transf(clean_abs)) + (100 - torch.mean(score))
