@@ -9,10 +9,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 import torch
-import torchaudio
+# import torchaudio
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from torch.nn.modules.utils import _single
+from typing import Optional
 
 from lava.lib.dl import slayer
 from audio_dataloader import DNSAudio
@@ -167,6 +169,49 @@ class Baseline(torch.nn.Module):
         for i, b in enumerate(self.blocks):
             b.export_hdf5(layer.create_group(f'{i}'))
 
+class Conv1d_binary(torch.nn.Conv1d):
+    # overwrite Dense layer forward method
+    def forward(self, input):
+        # binarize weights
+        weight_bin = self.weight.clone()
+        weight_bin = weight_bin.add_(1).div_(2).clamp_(0,1)
+        weight_bin.round()
+        weight_bin.mul_(2).add_(-1)
+        if self._pre_hook_fx is None:
+            weight = weight_bin
+        else:
+            weight = self._pre_hook_fx(weight_bin)
+
+        if len(input.shape) == 3:
+            old_shape = input.shape
+            return F.conv3d(  # bias does not need pre_hook_fx. Its disabled
+                input.reshape(old_shape[0], -1, 1, 1, old_shape[-1]),
+                weight, self.bias,
+                self.stride, self.padding, self.dilation, self.groups,
+            ).reshape(old_shape[0], -1, old_shape[-1])
+        else:
+            return F.conv3d(
+                input, weight, self.bias,
+                self.stride, self.padding, self.dilation, self.groups,
+            )
+        
+    def _conv_forward(self, input: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor]):
+        weight_bin = weight.clone()
+        weight_bin = weight_bin.add_(1).div_(2).clamp_(0,1)
+        weight_bin.round()
+        weight_bin.mul_(2).add_(-1)
+        weight = weight_bin
+
+        if self.padding_mode != 'zeros':
+            return F.conv1d(F.pad(input, self._reversed_padding_repeated_twice, mode=self.padding_mode),
+                            weight, bias, self.stride,
+                            _single(0), self.dilation, self.groups)
+        return F.conv1d(input, weight, bias, self.stride,
+                        self.padding, self.dilation, self.groups)
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return self._conv_forward(input, self.weight, self.bias)
+
 class Network(torch.nn.Module):
     def __init__(self,inp,k,c,d,  threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0):
         super().__init__()
@@ -190,17 +235,17 @@ class Network(torch.nn.Module):
         #     torch.nn.ReLU(inplace=True),
         # ])
         self.blocks = torch.nn.ModuleList([
-            torch.nn.Conv1d(inp, c, kernel_size=k, padding='same', bias=False),
+            Conv1d_binary(inp, c, kernel_size=k, padding='same', bias=False),
             torch.nn.BatchNorm1d(c),
             torch.nn.ReLU(inplace=True),
         ])
 
         for ii in range(d):
-            self.blocks.append(torch.nn.Conv1d(c, c, kernel_size=k, padding='same', bias=False))
+            self.blocks.append(Conv1d_binary(c, c, kernel_size=k, padding='same', bias=False))
             self.blocks.append(torch.nn.BatchNorm1d(c))
             self.blocks.append(torch.nn.ReLU(inplace=True))
 
-        self.blocks.append(torch.nn.Conv1d(c, inp, kernel_size=k, padding='same', bias=False))
+        self.blocks.append(Conv1d_binary(c, inp, kernel_size=k, padding='same', bias=False))
         self.blocks.append(torch.nn.BatchNorm1d(inp))
         self.blocks.append(torch.nn.ReLU(inplace=True))
 
