@@ -8,15 +8,18 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, RandomSampler
 import argparse
 from lava.lib.dl import slayer
-from audio_dataloader import DNSAudio
-from snr import si_snr
-from dnsmos import DNSMOS
-from torch_mdct import MDCT, InverseMDCT
-import os
 
+from utility.audio_dataloader import DNSAudio
+from utility.snr import si_snr
+from utility.dnsmos import DNSMOS
+from utility.torch_mdct import MDCT, InverseMDCT
+from utility.networks import Network, ConvNetwork
+from utility.binarization import *
+
+import os
 from time import time
 
-from train_sdnn import collate_fn, stft_splitter, stft_mixer, calculate_filter_banks, reconstruct_wave_from_mfcc, nop_stats, Network
+from utility.helpers import *
 
 
 import onnxruntime as ort
@@ -33,6 +36,23 @@ class InferenceNet(Network):
             x = block(x)
             count = torch.mean((torch.abs(x) > 0).to(x.dtype))
             counts.append(count.item())
+
+        mask = torch.relu(x + 1)
+        return slayer.axon.delay(noisy, self.out_delay) * mask, torch.tensor(counts)
+    
+class InferenceConvNet(ConvNetwork):
+    def forward(self, noisy):
+        x = noisy - self.stft_mean
+        x = torch.unsqueeze(x, dim=2)
+        x = torch.unsqueeze(x, dim=4)
+
+        counts = []
+        for block in self.blocks:
+            x = block(x)
+            count = torch.mean((torch.abs(x) > 0).to(x.dtype))
+            counts.append(count.item())
+            
+        x = torch.squeeze(x)
 
         mask = torch.relu(x + 1)
         return slayer.axon.delay(noisy, self.out_delay) * mask, torch.tensor(counts)
@@ -112,6 +132,34 @@ if __name__ == "__main__":
     if "phase_inc" in args.keys():
         phase_inc = args["phase_inc"]
         
+    binarization = False
+    if "binarization" in args.keys():
+        binarization = args["binarization"]
+        
+    ternarization = False
+    if "ternarization" in args.keys():
+        ternarization = args["ternarization"] 
+        
+    quantization = False
+    if "quantization" in args.keys():
+        quantization = args["quantization"] 
+    
+    q_bits = 8
+    if "bits" in args.keys():
+        q_bits = args["bits"]
+        
+    arch = "baseline"
+    if "architecture" in args.keys():
+        arch = args["architecture"]
+        
+    n_layers = 2
+    if "n_layers" in args.keys():
+        n_layers = args["n_layers"]
+    
+    kernel_size = 5
+    if "kernel_size" in args.keys():
+        kernel_size = args[kernel_size]
+        
     
     train_set = DNSAudio(root=root + 'training_set/')
     validation_set = DNSAudio(root=root + 'validation_set/')
@@ -158,6 +206,9 @@ if __name__ == "__main__":
         mse_loss_mfcc_transformation = torchaudio.transforms.MFCC(n_mfcc = n_mfcc, melkwargs = {"window_fn" : lambda n:torch.hann_window(n, device = device), 
                                                                                             "n_fft" : 512, "hop_length" : 128}).to(device)
 
+    obs = torch.ao.quantization.observer.MinMaxObserver(
+        quant_min=0, quant_max=2**q_bits - 1)
+    obs.to(device=device)
 
     n_phase_features = int(phase_inc * (n_fft // 2 + 1))
     if n_phase_features != 0:
@@ -166,19 +217,36 @@ if __name__ == "__main__":
     n_input = n_fft // 2 + 1 + n_phase_features if transformation == "stft" else 256 if transformation == "mdct" else n_mfcc
     n_hidden = n_fft + 2*n_phase_features if transformation == "stft" else 512 if transformation == "mdct" else int(n_mfcc * hidden_input_ratio)
 
-    net = InferenceNet(args['threshold'],
-                args['tau_grad'],
-                args['scale_grad'],
-                args['dmax'],
-                args['out_delay'],
-                n_input,
-                n_hidden).to(device)
+    if arch == "baseline":
+        net = InferenceNet(args['threshold'],
+                    args['tau_grad'],
+                    args['scale_grad'],
+                    args['dmax'],
+                    args['out_delay'],
+                    n_input, n_hidden, n_layers,
+                    binarization, ternarization, quantization, obs).to(device)
+    elif arch == "conv":
+        net = InferenceConvNet(args['threshold'],
+                    args['tau_grad'],
+                    args['scale_grad'],
+                    args['dmax'],
+                    args['out_delay'],
+                    n_input, n_hidden, n_layers, kernel_size)
     
     noisy, clean, noise, metadata = train_set[0]
     noisy = torch.unsqueeze(torch.FloatTensor(noisy), dim=0).to(device)
     noisy_abs, noisy_arg = stft_splitter(noisy, window, n_fft)
     net(noisy_abs)
     net.load_state_dict(torch.load(trained_folder + '/network.pt'))
+    
+    print("NETWORK:")
+    print(net)
+    
+    if binarization:
+        for m in net.modules():
+            if isinstance(m, DenseBinary):
+                m.synapse.binarize()
+        
     
     ############################
     ### IN-SAMPLE STATISTICS ###
