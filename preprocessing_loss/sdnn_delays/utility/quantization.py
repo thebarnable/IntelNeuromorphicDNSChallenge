@@ -7,41 +7,69 @@ from lava.lib.dl import slayer
 class LayerDenseBinary(slayer.synapse.layer.Dense):
     # overwrite Dense layer forward method
     def forward(self, input):
+        
         # binarize weights
-        weight_bin = self.weight.clone()
-        weight_bin.add_(1).div_(2).clamp_(0,1)
-        weight_bin.round_()
-        weight_bin.mul_(2).add_(-1)
-        if self._pre_hook_fx is None:
-            weight = weight_bin
-        else:
-            weight = self._pre_hook_fx(weight_bin)
+        self.binarize()
 
         if len(input.shape) == 3:
             old_shape = input.shape
             return F.conv3d(  # bias does not need pre_hook_fx. Its disabled
                 input.reshape(old_shape[0], -1, 1, 1, old_shape[-1]),
-                weight, self.bias,
+                self.weight, self.bias,
                 self.stride, self.padding, self.dilation, self.groups,
             ).reshape(old_shape[0], -1, old_shape[-1])
         else:
             return F.conv3d(
-                input, weight, self.bias,
+                input, self.weight, self.bias,
                 self.stride, self.padding, self.dilation, self.groups,
             )
             
     def binarize(self):
+        self.save_non_binary_weights()
         weight_bin = self.weight.clone()
         weight_bin.add_(1).div_(2).clamp_(0,1)
         weight_bin.round_()
         weight_bin = weight_bin.mul_(2).add_(-1)
         
-        self.weight = torch.nn.Parameter(weight_bin)
+        if self._pre_hook_fx is not None:
+            weight_bin = self._pre_hook_fx(weight_bin)
+        
+        self.weight.data = weight_bin
+        
+    def save_non_binary_weights(self):
+        if not hasattr(self, "non_bin_weight"):
+            self.non_bin_weight = torch.clone(self.weight)
+        self.non_bin_weight.data.copy_(self.weight.data)
+        
+    def load_non_binary_weights(self):
+        self.weight.data.copy_(self.non_bin_weight.data)
+        
+    def clamp(self):
+        self.weight.data.clamp_(-1,1)
         
 class LayerDenseTernary(slayer.synapse.layer.Dense):
     # overwrite Dense layer forward method
     def forward(self, input):
+        
         # ternarize weights
+        self.ternarize()
+
+        if len(input.shape) == 3:
+            old_shape = input.shape
+            return F.conv3d(  # bias does not need pre_hook_fx. Its disabled
+                input.reshape(old_shape[0], -1, 1, 1, old_shape[-1]),
+                self.weight, self.bias,
+                self.stride, self.padding, self.dilation, self.groups,
+            ).reshape(old_shape[0], -1, old_shape[-1])
+        else:
+            return F.conv3d(
+                input, self.weight, self.bias,
+                self.stride, self.padding, self.dilation, self.groups,
+            )
+            
+    def ternarize(self):
+        self.save_non_ternary_weights()
+        
         weight_ter = self.weight.clone()
         thresh = weight_ter.data.abs().sum() / weight_ter.data.numel()
         thresh *= 0.7
@@ -50,23 +78,21 @@ class LayerDenseTernary(slayer.synapse.layer.Dense):
         weight_ter[weight_ter<-thresh] = -1
         weight_ter[weight_ter.data.abs()<=thresh] = 0
 
-        if self._pre_hook_fx is None:
-            weight = weight_ter
-        else:
-            weight = self._pre_hook_fx(weight_ter)
-
-        if len(input.shape) == 3:
-            old_shape = input.shape
-            return F.conv3d(  # bias does not need pre_hook_fx. Its disabled
-                input.reshape(old_shape[0], -1, 1, 1, old_shape[-1]),
-                weight, self.bias,
-                self.stride, self.padding, self.dilation, self.groups,
-            ).reshape(old_shape[0], -1, old_shape[-1])
-        else:
-            return F.conv3d(
-                input, weight, self.bias,
-                self.stride, self.padding, self.dilation, self.groups,
-            )
+        if self._pre_hook_fx is not None:
+            weight_ter = self._pre_hook_fx(weight_ter)
+        
+        self.weight.data = weight_ter
+        
+    def save_non_ternary_weights(self):
+        if not hasattr(self, "non_tern_weight"):
+            self.non_tern_weight = torch.clone(self.weight)
+        self.non_tern_weight.data.copy_(self.weight.data)
+        
+    def load_non_ternary_weights(self):
+        self.weight.data.copy_(self.non_tern_weight.data)
+        
+    def clamp(self):
+        self.weight.data.clamp_(-1,1)
 
 class LayerDenseQuant(slayer.synapse.layer.Dense):
     def __init__(self, obs,

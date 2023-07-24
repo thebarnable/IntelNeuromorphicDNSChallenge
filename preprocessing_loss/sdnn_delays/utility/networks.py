@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from time import time
 
-from utility.binarization import *
+from utility.quantization import *
 from utility.helpers import *
 
 from lava.lib.dl import slayer
@@ -12,7 +12,7 @@ from lava.lib.dl import slayer
 
 class Network(torch.nn.Module):
     def __init__(self, threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0, n_input=257,
-                 n_hidden=512, n_layers=2, binarization=False, ternarization=False, quantization=False, obs=None):
+                 n_hidden=512, n_layers=2, batch_norm = False, dropout=False, binarization=False, ternarization=False, quantization=False, obs=None):
         super().__init__()
 
         self.stft_mean = 0.2
@@ -31,6 +31,10 @@ class Network(torch.nn.Module):
             'requires_grad': False,  # trainable threshold
             'shared_param': True,   # layer wise threshold
         }
+        
+        if dropout:
+            sigma_params["dropout"] = slayer.neuron.dropout.Dropout(1e-4, inplace=True)
+        
         sdnn_params = {
             **sigma_params,
             'activation': F.relu,  # activation function
@@ -43,7 +47,7 @@ class Network(torch.nn.Module):
             self.blocks = torch.nn.ModuleList([
                 slayer.block.sigma_delta.Input(sdnn_params),
                 DenseQuant(self.obs, sdnn_params, n_input, n_hidden, weight_norm=False, delay=True, delay_shift=True)] +
-                (n_layers-2) * [DenseQuant(self.obs, sdnn_params, n_hidden, n_hidden, weight_norm=False, delay=True, delay_shift=True)] +
+                (n_layers-1) * [DenseQuant(self.obs, sdnn_params, n_hidden, n_hidden, weight_norm=False, delay=True, delay_shift=True)] +
                 [slayer.block.sigma_delta.Output(sdnn_params, n_hidden, n_input, weight_norm=False)])
         elif self.binarization:
             print('Network initialization with binarization')
@@ -65,11 +69,20 @@ class Network(torch.nn.Module):
                 slayer.block.sigma_delta.Dense(sdnn_params, n_input, n_hidden, weight_norm=False, delay=True, delay_shift=True)] +
                 (n_layers-1) * [slayer.block.sigma_delta.Dense(sdnn_params, n_hidden, n_hidden, weight_norm=False, delay=True, delay_shift=True)] +
                 [slayer.block.sigma_delta.Output(sdnn_params, n_hidden, n_input, weight_norm=False)])
-
+        
         self.blocks[0].pre_hook_fx = self.input_quantizer
-
+        
         for i in range(1, n_layers+1):
             self.blocks[i].delay.max_delay = max_delay
+        
+        if batch_norm:
+            for i in range(n_layers+1, 1, -1):
+                self.blocks.insert(i, slayer.neuron.norm.MeanOnlyBatchNorm(num_features=n_hidden))
+                
+        print("Created network:")
+        print(self)                
+
+
 
     def forward(self, noisy):
         x = noisy - self.stft_mean
@@ -114,7 +127,7 @@ class Network(torch.nn.Module):
 class ConvNetwork(torch.nn.Module):
 
     def __init__(self, threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0, n_input=257,
-                 n_hidden=512, n_layer=5, kernel_size=5):
+                 n_hidden=512, n_layers=5, batch_norm = False, dropout=False, kernel_size=5):
         super().__init__()
 
         self.stft_mean = 0.2
@@ -129,9 +142,13 @@ class ConvNetwork(torch.nn.Module):
             'requires_grad': False,  # trainable threshold
             'shared_param': True,   # layer wise threshold
         }
+        
+        if dropout:
+            sigma_params["dropout"] = slayer.neuron.dropout.Dropout(1e-4, inplace=True)
+        
         sdnn_params = {
             **sigma_params,
-            'activation': F.relu,  # activation function
+            'activation': F.leaky_relu,  # activation function
         }
         
         self.input_quantizer = lambda x: slayer.utils.quantize(x, step=1 / 64)
@@ -142,17 +159,28 @@ class ConvNetwork(torch.nn.Module):
         self.blocks = torch.nn.ModuleList([
             slayer.block.sigma_delta.Input(sdnn_params),
             slayer.block.sigma_delta.Conv(sdnn_params, in_features=n_input, out_features=n_hidden, kernel_size=kernel_size, 
-                                          weight_norm=False, delay=True, delay_shift=True, padding=padding)] +
-            (n_layer - 1) * [slayer.block.sigma_delta.Conv(sdnn_params, in_features=n_hidden, out_features=n_hidden,
-                                                           kernel_size=kernel_size, weight_norm=False, delay=True, delay_shift=True, padding=padding)] +
-            [slayer.block.sigma_delta.Output(
-                sdnn_params, n_hidden, n_input, weight_norm=False)]
+                                          weight_norm=False, delay=False, delay_shift=False, padding=padding)] +
+            (n_layers - 1) * [slayer.block.sigma_delta.Conv(sdnn_params, in_features=n_hidden, out_features=n_hidden,
+                                                           kernel_size=kernel_size, weight_norm=False, delay=False, delay_shift=False, padding=padding)] +
+            [slayer.block.sigma_delta.Output(sdnn_params, n_hidden, n_input, weight_norm=False)]
         )
 
         self.blocks[0].pre_hook_fx = self.input_quantizer
 
-        for i in range(1, n_layer+1):
-            self.blocks[i].delay.max_delay = max_delay
+        for i in range(1, n_layers+1):
+            #self.blocks[i].delay.max_delay = max_delay
+            #torch.nn.init.normal_(self.blocks[i].synapse.weight)
+            pass
+            
+        #torch.nn.init.normal_(self.blocks[-1].synapse.weight)
+            
+        if batch_norm:
+            for i in range(n_layers+1, 1, -1):
+                self.blocks.insert(i, slayer.neuron.norm.MeanOnlyBatchNorm(num_features=n_hidden))
+                
+                
+        print("Created network:")
+        print(self)    
 
     def forward(self, noisy):
         x = noisy - self.stft_mean
@@ -163,7 +191,6 @@ class ConvNetwork(torch.nn.Module):
             x = block(x)
             
         x = torch.squeeze(x)
-
         mask = torch.relu(x + 1)
         return slayer.axon.delay(noisy, self.out_delay) * mask
 
@@ -196,3 +223,4 @@ class ConvNetwork(torch.nn.Module):
         layer = h.create_group('layer')
         for i, b in enumerate(self.blocks):
             b.export_hdf5(layer.create_group(f'{i}'))
+

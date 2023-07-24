@@ -16,7 +16,7 @@ import torchaudio.transforms
 from time import time
 
 from utility.torch_mdct import MDCT, InverseMDCT
-from utility.binarization import *
+from utility.quantization import *
 from utility.helpers import *
 from utility.audio_dataloader import DNSAudio
 from utility.snr import si_snr
@@ -108,8 +108,11 @@ if __name__ == '__main__':
                         help="Number of MFCC components (only considered if transformation is mfcc or mse_loss_type is mfcc)")
 
     # ratio between input and hidden layer size
-    parser.add_argument("-hidden_input_ratio", type=float, default=2.0,
-                        help="Ratio of hidden layer and input layer size (only considered if transformation=mfcc, for stft ratio is always 512/257)")
+    #parser.add_argument("-hidden_input_ratio", type=float, default=2.0,
+    #                    help="Ratio of hidden layer and input layer size (only considered if transformation=mfcc, for stft ratio is always 512/257)")
+    
+    # number of hidden neurons
+    parser.add_argument("-n_hidden", type=int, default=512, help="Number of hidden neurons.")
 
     # loss type
     parser.add_argument("-mse_loss_type", type=str, default="stft", choices=[
@@ -120,7 +123,7 @@ if __name__ == '__main__':
 
     # learn rate scheduler
     parser.add_argument("-lr_scheduler", type=str, default=None, choices=[
-                        None, "linear", "mult", "step", "multistep"], help="Type of learn rate scheduler")
+                        None, "linear", "mult", "step", "multistep", "mult2"], help="Type of learn rate scheduler")
 
     # Data augmentation
     parser.add_argument("-data_aug_factor", type=float, default=0,
@@ -160,6 +163,19 @@ if __name__ == '__main__':
     
     # Kernel size for the conv network
     parser.add_argument("-kernel_size", type=int, default=5, help="Kernel size. Only considered if architecture=conv.")
+    
+    # Batch Normalization
+    parser.add_argument("-batch_norm", type=bool, default = False, help="Enable neuron batch normalization.")
+    
+    # Batch Normalization
+    parser.add_argument("-dropout", type=bool, default = False, help="Enable neuron dropout.")
+
+    # Debug Weights
+    parser.add_argument("-debug_weights", type=bool, default = False, help="Enable debugging of weights")
+    
+    # Additional loss
+    parser.add_argument("-loss_non_original", type=bool, default=False, help="Add an addition loss to prevent network to learn output=input")
+    
 
     args = parser.parse_args()
 
@@ -202,22 +218,23 @@ if __name__ == '__main__':
             0, args.n_fft // 2, n_phase_features)).astype(int)).to(device)
     n_input = args.n_fft // 2 + 1 + \
         n_phase_features if args.transformation == "stft" else 256 if args.transformation == "mdct" else args.n_mfcc
-    n_hidden = args.n_fft + 2 * \
-        n_phase_features if args.transformation == "stft" else 512 if args.transformation == "mdct" else int(
-            args.n_mfcc * args.hidden_input_ratio)
+    #n_hidden = args.n_fft + 2 * \
+    #    n_phase_features if args.transformation == "stft" else 512 if args.transformation == "mdct" else int(
+    #        args.n_mfcc * args.hidden_input_ratio)
+    n_hidden = args.n_hidden
 
     out_delay = args.out_delay
     
     if args.architecture == "baseline":
         net = Network(args.threshold, args.tau_grad, args.scale_grad, args.dmax,
-                      args.out_delay, n_input, n_hidden, args.n_layers, args.binarization, args.ternarization,
+                      args.out_delay, n_input, n_hidden, args.n_layers, args.batch_norm, args.dropout, args.binarization, args.ternarization,
                       args.quantization, obs).to(device)
     elif args.architecture == "conv":
         if args.quantization or args.binarization or args.ternarization:
             raise Exception("Quantization, Binarization and Ternarization is not implemented for the Conv Network") 
         
         net = ConvNetwork(args.threshold, args.tau_grad, args.scale_grad, args.dmax,
-                      args.out_delay, n_input, n_hidden, args.n_layers, args.kernel_size).to(device)
+                      args.out_delay, n_input, n_hidden, args.n_layers, args.batch_norm, args.dropout, args.kernel_size).to(device)
     
     
     if len(args.gpu) == 1:
@@ -230,10 +247,11 @@ if __name__ == '__main__':
     if args.architecture == "baseline":
         optimizer = torch.optim.RAdam(net.parameters(),
                                     lr=args.lr,
-                                    weight_decay=1e-5)
+                                    weight_decay=1e-5 if not args.binarization else 0)
     elif args.architecture == "conv":
         optimizer = torch.optim.RAdam(net.parameters(),
-                                    lr=args.lr)
+                                    lr=args.lr,
+                                    weight_decay=1e-3)
 
     # Learn rate scheduler
     lr_scheduler = None
@@ -248,7 +266,10 @@ if __name__ == '__main__':
             optimizer, step_size=2, gamma=0.8, verbose=True)
     elif args.lr_scheduler == "multistep":
         lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
-            optimizer, milestones=[50,100,150], gamma=0.1, verbose=True)
+            optimizer, milestones=[20,35,50], gamma=0.1, verbose=True)
+    elif args.lr_scheduler == "mult2":
+        lr_scheduler = torch.optim.lr_scheduler.MultiplicativeLR(
+            optimizer, lambda ep: 1 if ep < 5 or ep >= 60 else 0.85, verbose=True)
 
     train_set = DNSAudio(root=args.path + 'training_set/')
     validation_set = DNSAudio(root=args.path + 'validation_set/')
@@ -344,6 +365,14 @@ if __name__ == '__main__':
             noisy = noisy.to(device)
             clean = clean.to(device)
 
+            if args.debug_weights and i % 400 == 0:
+                torch.set_printoptions(profile="full", linewidth=1000)
+                with open(trained_folder + '/weights_before_%d_%d.txt' % (epoch, i), 'w+') as f:
+                    for name, val in net.named_parameters():
+                        if "weight" in name:
+                            f.write(name+" : "+str(val.data.squeeze())+"\n")
+                torch.set_printoptions(profile="default")
+
             # USING STFT
             if args.transformation == "stft":
                 noisy_abs, noisy_arg = stft_splitter(
@@ -365,9 +394,6 @@ if __name__ == '__main__':
                 denoised_arg = slayer.axon.delay(denoised_arg, out_delay)
                 clean_abs = slayer.axon.delay(clean_abs, out_delay)
                 clean = slayer.axon.delay(clean, args.n_fft // 4 * out_delay)
-
-                idx_abs = torch.where(torch.isnan(denoised_abs))
-                idx_arg = torch.where(torch.isnan(denoised_arg))
 
                 clean_rec = stft_mixer(
                     denoised_abs, denoised_arg, window, args.n_fft)
@@ -407,8 +433,13 @@ if __name__ == '__main__':
             if args.signal_quality_loss_type == "si-snr":
                 score = si_snr(clean_rec, clean[:, :clean_rec.size(dim=1)])
                 signal_loss = (100 - torch.mean(score))
+                
+            loss_add = 0
+            if args.loss_non_original:
+                loss_add = 1e-2 * torch.abs((0.5 - F.mse_loss(denoised_abs, noisy_abs)))
 
-            loss = mse_loss + signal_loss
+            loss = mse_loss + signal_loss + loss_add
+            print(mse_loss.item(), signal_loss.item())
 
             if torch.isnan(loss):
                 print("WARNING: NaN detected in loss! MSE loss: %.5f, Signal loss:%.5f, Total Loss: %.5f" % (
@@ -423,7 +454,29 @@ if __name__ == '__main__':
             loss.backward()
             net.validate_gradients()
             torch.nn.utils.clip_grad_norm_(net.parameters(), args.clip)
+            
+            if args.binarization:
+                for m in net.modules():
+                    if isinstance(m, DenseBinary):
+                        m.synapse.load_non_binary_weights()
+            elif args.ternarization:
+                for m in net.modules():
+                    if isinstance(m, DenseTernary):
+                        m.synapse.load_non_ternary_weights()
+                
+            
             optimizer.step()
+            
+            if args.binarization:
+                for m in net.modules():
+                    if isinstance(m, DenseBinary):
+                        m.synapse.clamp()
+                        m.synapse.save_non_binary_weights()
+            elif args.ternarization:
+                for m in net.modules():
+                    if isinstance(m, DenseTernary):
+                        m.synapse.clamp()
+                        m.synapse.save_non_ternary_weights()
 
             if i < 10:
                 net.grad_flow(path=trained_folder + '/')
@@ -444,8 +497,13 @@ if __name__ == '__main__':
                            f'({100.0 * processed / total:.0f}%)]']
             stats.print(epoch, i, samples_sec, header=header_list)
 
-            if i == 0:
-                print("First iteration of training done without error...")
+            if args.debug_weights and i % 400 == 0:
+                torch.set_printoptions(profile="full", linewidth=1000)
+                with open(trained_folder + '/weights_after_%d_%d.txt' % (epoch, i), 'w+') as f:
+                    for name, val in net.named_parameters():
+                        if "weight" in name:
+                            f.write(name+" : "+str(val.data.squeeze())+"\n")
+                torch.set_printoptions(profile="default")
                 
         if lr_scheduler is not None:
             lr_scheduler.step()
@@ -521,8 +579,12 @@ if __name__ == '__main__':
                 if args.signal_quality_loss_type == "si-snr":
                     score = si_snr(clean_rec, clean)
                     signal_loss = (100 - torch.mean(score))
+                    
+                loss_add = 0
+                if args.loss_non_original:
+                    loss_add = 1e-2 * torch.abs((0.5 - F.mse_loss(denoised_abs, noisy_abs)))
 
-                loss = mse_loss + signal_loss
+                loss = mse_loss + signal_loss + loss_add
 
                 if args.signal_quality_loss_type == "si-snr":
                     stats.validation.correct_samples += torch.sum(score).item()
