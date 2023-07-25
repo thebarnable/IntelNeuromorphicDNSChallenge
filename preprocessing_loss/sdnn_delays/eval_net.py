@@ -69,6 +69,7 @@ if __name__ == "__main__":
     parser.add_argument("-exp", type=str, default="baseline", help="Experiment identifier")
     parser.add_argument("-gpu", type=int, default=0, help="GPU to use")
     parser.add_argument("-no_train", action="store_false", dest="train", help="Skip calculation of in-sample statistics")
+    parser.add_argument("-only_lat", action="store_true", help="Only calculate encode+decoder latency")
     parser.add_argument("-train_size", type=int, default=60000, help="Number of train samples to consider")
     parser.add_argument("-valid_size", type=int, default=60000, help="Number of validation samples to consider")
     parser.add_argument("-eval_out", type=str, default=None, help="Folder to save output files (example audio files, statistic files) into; default=eval_results/<exp>/")
@@ -254,7 +255,11 @@ if __name__ == "__main__":
                     args['out_delay'],
                     n_input, n_hidden, n_layers, batch_norm, dropout, kernel_size=kernel_size).to(device)
     
-    noisy, clean, noise, metadata = train_set[0]
+    
+    if cur_args.only_lat:
+        noisy, clean, noise, metadata = validation_set[0]
+    else:
+        noisy, clean, noise, metadata = train_set[0]
     noisy = torch.unsqueeze(torch.FloatTensor(noisy), dim=0).to(device)
     noisy_abs, noisy_arg = stft_splitter(noisy, window, n_fft)
     net(noisy_abs)
@@ -276,7 +281,8 @@ if __name__ == "__main__":
     ############################
     
     
-    dnsmos = DNSMOS(providers=["CUDAExecutionProvider"])
+    if not cur_args.only_lat:
+        dnsmos = DNSMOS(providers=["CUDAExecutionProvider"])
     
     if cur_args.train:
         print_stats(stats_file, "IN-SAMPLE STATISTICS (n=%d)\n" % cur_args.train_size)
@@ -421,6 +427,9 @@ if __name__ == "__main__":
     t_st = datetime.now()
     for i, (noisy, clean, noise) in enumerate(validation_loader):
         net.eval()
+        if cur_args.only_lat:
+          break
+
         with torch.no_grad():
             noisy = noisy.to(device)
             clean = clean.to(device)
@@ -505,38 +514,39 @@ if __name__ == "__main__":
             header_list.append(f'Event rate: {[c.item() for c in count]}')
             print(f'\r{header_list[0]}', end='')
 
-    dnsmos_clean /= cur_args.valid_size
-    dnsmos_noisy /= cur_args.valid_size
-    dnsmos_noise /= cur_args.valid_size
-    dnsmos_cleaned /= cur_args.valid_size
+    if not cur_args.only_lat:
+        dnsmos_clean /= cur_args.valid_size
+        dnsmos_noisy /= cur_args.valid_size
+        dnsmos_noise /= cur_args.valid_size
+        dnsmos_cleaned /= cur_args.valid_size
 
-    print()
-    stats.print(0, i, samples_sec, header=header_list)
-    print_stats(stats_file, 'Avg DNSMOS clean   [ovrl, sig, bak]: ' + str(dnsmos_clean))
-    print_stats(stats_file, 'Avg DNSMOS noisy   [ovrl, sig, bak]: ' + str(dnsmos_noisy))
-    print_stats(stats_file, 'Avg DNSMOS noise   [ovrl, sig, bak]: ' + str(dnsmos_noise))
-    print_stats(stats_file, 'Avg DNSMOS cleaned [ovrl, sig, bak]: ' + str(dnsmos_cleaned))
+        print()
+        stats.print(0, i, samples_sec, header=header_list)
+        print_stats(stats_file, 'Avg DNSMOS clean   [ovrl, sig, bak]: ' + str(dnsmos_clean))
+        print_stats(stats_file, 'Avg DNSMOS noisy   [ovrl, sig, bak]: ' + str(dnsmos_noisy))
+        print_stats(stats_file, 'Avg DNSMOS noise   [ovrl, sig, bak]: ' + str(dnsmos_noise))
+        print_stats(stats_file, 'Avg DNSMOS cleaned [ovrl, sig, bak]: ' + str(dnsmos_cleaned))
 
-    mean_events = np.mean(valid_event_counts, axis=0)
+        mean_events = np.mean(valid_event_counts, axis=0)
 
-    neuronops = []
-    for block in net.blocks[:-1]:
-        neuronops.append(np.prod(block.neuron.shape))
+        neuronops = []
+        for block in net.blocks[:-1]:
+            neuronops.append(np.prod(block.neuron.shape))
 
-    synops = []
-    for events, block in zip(mean_events, net.blocks[1:]):
-        synops.append(events * np.prod(block.synapse.shape))
-    print_stats(stats_file, f'SynOPS: {synops}')
-    print_stats(stats_file, f'Total SynOPS: {sum(synops)} per time-step')
-    print_stats(stats_file, f'Total NeuronOPS: {sum(neuronops)} per time-step')
-    print_stats(stats_file, f'Time-step per sample: {noisy_abs.shape[-1]}')
-    
-    # Save validation example audio
-    torchaudio.save(eval_out+'valid_example_noisy.wav', noisy[0:1, :].cpu(), 16000)
-    torchaudio.save(eval_out+'valid_example_clean.wav', clean[0:1, :].cpu(), 16000)
-    torchaudio.save(eval_out+'valid_example_clean_rec.wav', clean_rec[0:1, :].cpu(), 16000)
-    
-    print_stats(stats_file, "\nLATENCY, QUALITY METRICS AND COMPUTATIONAL METRICS\n")
+        synops = []
+        for events, block in zip(mean_events, net.blocks[1:]):
+            synops.append(events * np.prod(block.synapse.shape))
+        print_stats(stats_file, f'SynOPS: {synops}')
+        print_stats(stats_file, f'Total SynOPS: {sum(synops)} per time-step')
+        print_stats(stats_file, f'Total NeuronOPS: {sum(neuronops)} per time-step')
+        print_stats(stats_file, f'Time-step per sample: {noisy_abs.shape[-1]}')
+        
+        # Save validation example audio
+        torchaudio.save(eval_out+'valid_example_noisy.wav', noisy[0:1, :].cpu(), 16000)
+        torchaudio.save(eval_out+'valid_example_clean.wav', clean[0:1, :].cpu(), 16000)
+        torchaudio.save(eval_out+'valid_example_clean_rec.wav', clean_rec[0:1, :].cpu(), 16000)
+        
+        print_stats(stats_file, "\nLATENCY, QUALITY METRICS AND COMPUTATIONAL METRICS\n")
     
     ###############
     ### LATENCY ###
@@ -572,6 +582,8 @@ if __name__ == "__main__":
     enc_dec_latency = time_elapsed / noisy.shape[0] / 16000 / 30 * hop_length
     print_stats(stats_file, f'STFT + ISTFT latency: {enc_dec_latency * 1000} ms')
 
+    if cur_args.only_lat:
+        exit(0)
 
     # N-DNS latency
     dns_delays = []
