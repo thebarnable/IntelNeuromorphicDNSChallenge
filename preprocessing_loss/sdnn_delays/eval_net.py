@@ -89,8 +89,11 @@ if __name__ == "__main__":
         args['out_delay'] = 0
     if 'n_fft' not in args.keys():
         args['n_fft'] = 512
-        
-    device = torch.device('cuda:'+str(cur_args.gpu))
+       
+    if torch.cuda.is_available():    
+        device = torch.device('cuda:'+str(cur_args.gpu))
+    else:
+        device = torch.device('cpu')
     
     root = args['path']
     out_delay = args['out_delay']
@@ -255,7 +258,7 @@ if __name__ == "__main__":
     noisy = torch.unsqueeze(torch.FloatTensor(noisy), dim=0).to(device)
     noisy_abs, noisy_arg = stft_splitter(noisy, window, n_fft)
     net(noisy_abs)
-    net.load_state_dict(torch.load(trained_folder + '/network.pt'))
+    net.load_state_dict(torch.load(trained_folder + '/network.pt', map_location=device))
     
     if binarization:
         for m in net.modules():
