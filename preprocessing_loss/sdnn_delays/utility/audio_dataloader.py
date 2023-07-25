@@ -61,8 +61,14 @@ class DNSAudio:
         """
         noisy_file, clean_file, noise_file, metadata = self._get_filenames(n)
         noisy_audio, sampling_frequency = sf.read(noisy_file)
-        clean_audio, _ = sf.read(clean_file)
-        noise_audio, _ = sf.read(noise_file)
+        try:
+            clean_audio, _ = sf.read(clean_file)
+            noise_audio, _ = sf.read(noise_file)
+        except:
+            clean_audio = np.array([])
+            noise_audio = np.array([])
+            print("audio_dataloader::WARNING: could not read 'clean' or 'noise' data. Returning zeros..")
+
         num_samples = 30 * sampling_frequency  # 30 sec data
         metadata['fs'] = sampling_frequency
 
@@ -72,18 +78,24 @@ class DNSAudio:
             noisy_audio = np.concatenate([noisy_audio,
                                           np.zeros(num_samples
                                                    - len(noisy_audio))])
-        if len(clean_audio) > num_samples:
-            clean_audio = clean_audio[:num_samples]
-        else:
-            clean_audio = np.concatenate([clean_audio,
-                                          np.zeros(num_samples
-                                                   - len(clean_audio))])
-        if len(noise_audio) > num_samples:
-            noise_audio = noise_audio[:num_samples]
-        else:
-            noise_audio = np.concatenate([noise_audio,
-                                          np.zeros(num_samples
-                                                   - len(noise_audio))])
+                                                   
+        try:
+            if len(clean_audio) > num_samples:
+                clean_audio = clean_audio[:num_samples]
+            else:
+                clean_audio = np.concatenate([clean_audio,
+                                              np.zeros(num_samples
+                                                       - len(clean_audio))])
+            if len(noise_audio) > num_samples:
+                noise_audio = noise_audio[:num_samples]
+            else:
+                noise_audio = np.concatenate([noise_audio,
+                                              np.zeros(num_samples
+                                                       - len(noise_audio))])
+        except:
+            clean_audio = np.zeros(noisy_audio.shape)
+            noise_audio = np.zeros(noisy_audio.shape)
+                                                                   
         return noisy_audio, clean_audio, noise_audio, metadata
 
     def __len__(self) -> int:
