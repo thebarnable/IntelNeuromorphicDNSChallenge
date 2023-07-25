@@ -183,7 +183,7 @@ if __name__ == "__main__":
     validation_set = DNSAudio(root=root + 'validation_set/')
     
     train_sampler = RandomSampler(train_set, replacement=False, num_samples=cur_args.train_size)
-    valid_sampler = RandomSampler(train_set, replacement=False, num_samples=cur_args.valid_size)
+    valid_sampler = RandomSampler(validation_set, replacement=False, num_samples=cur_args.valid_size)
 
     train_loader = DataLoader(train_set,
                             batch_size=32,
