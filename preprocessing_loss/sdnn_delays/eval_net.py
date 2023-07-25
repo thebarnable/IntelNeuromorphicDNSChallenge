@@ -14,7 +14,7 @@ from utility.snr import si_snr
 from utility.dnsmos import DNSMOS
 from utility.torch_mdct import MDCT, InverseMDCT
 from utility.networks import Network, ConvNetwork
-from utility.binarization import *
+from utility.quantization import *
 
 import os
 from time import time
@@ -120,10 +120,17 @@ if __name__ == "__main__":
     if "n_mfcc" in args.keys():
         n_mfcc = args["n_mfcc"]
     
-    hidden_input_ratio = 2.0
+    hidden_input_ratio = None
     if "hidden_input_ratio" in args.keys():
         hidden_input_ratio = args["hidden_input_ratio"]
-    
+        
+    n_hidden = None
+    if "n_hidden" in args.keys():
+        n_hidden = args["n_hidden"]
+        
+    if n_hidden is None and hidden_input_ratio is None:
+        n_hidden = 512
+            
     mse_loss_type = "stft"
     if "mse_loss_type" in args.keys():
         mse_loss_type = args["mse_loss_type"]
@@ -158,7 +165,15 @@ if __name__ == "__main__":
     
     kernel_size = 5
     if "kernel_size" in args.keys():
-        kernel_size = args[kernel_size]
+        kernel_size = args["kernel_size"]
+        
+    batch_norm = False
+    if "batch_norm" in args.keys():
+        batch_norm = args["batch_norm"]
+        
+    dropout = False
+    if "dropout" in args.keys():
+        dropout = args["dropout"]
         
     
     train_set = DNSAudio(root=root + 'training_set/')
@@ -206,16 +221,19 @@ if __name__ == "__main__":
         mse_loss_mfcc_transformation = torchaudio.transforms.MFCC(n_mfcc = n_mfcc, melkwargs = {"window_fn" : lambda n:torch.hann_window(n, device = device), 
                                                                                             "n_fft" : 512, "hop_length" : 128}).to(device)
 
-    obs = torch.ao.quantization.observer.MinMaxObserver(
-        quant_min=0, quant_max=2**q_bits - 1)
-    obs.to(device=device)
+    obs = None
+    if quantization or binarization or ternarization:
+        obs = torch.ao.quantization.observer.MinMaxObserver(
+            quant_min=0, quant_max=2**q_bits - 1)
+        obs.to(device=device)
 
     n_phase_features = int(phase_inc * (n_fft // 2 + 1))
     if n_phase_features != 0:
         print("Using %d phase features" % n_phase_features)
         phase_feature_indices = torch.from_numpy(np.round(np.linspace(0, n_fft // 2, n_phase_features)).astype(int)).to(device)
     n_input = n_fft // 2 + 1 + n_phase_features if transformation == "stft" else 256 if transformation == "mdct" else n_mfcc
-    n_hidden = n_fft + 2*n_phase_features if transformation == "stft" else 512 if transformation == "mdct" else int(n_mfcc * hidden_input_ratio)
+    if n_hidden is None:
+        n_hidden = n_fft + 2*n_phase_features if transformation == "stft" else 512 if transformation == "mdct" else int(n_mfcc * hidden_input_ratio)
 
     if arch == "baseline":
         net = InferenceNet(args['threshold'],
@@ -224,14 +242,14 @@ if __name__ == "__main__":
                     args['dmax'],
                     args['out_delay'],
                     n_input, n_hidden, n_layers,
-                    binarization, ternarization, quantization, obs).to(device)
+                    binarization=binarization, ternarization=ternarization, quantization=quantization, obs=obs).to(device)
     elif arch == "conv":
         net = InferenceConvNet(args['threshold'],
                     args['tau_grad'],
                     args['scale_grad'],
                     args['dmax'],
                     args['out_delay'],
-                    n_input, n_hidden, n_layers, kernel_size)
+                    n_input, n_hidden, n_layers, batch_norm, dropout, kernel_size=kernel_size).to(device)
     
     noisy, clean, noise, metadata = train_set[0]
     noisy = torch.unsqueeze(torch.FloatTensor(noisy), dim=0).to(device)
@@ -239,13 +257,15 @@ if __name__ == "__main__":
     net(noisy_abs)
     net.load_state_dict(torch.load(trained_folder + '/network.pt'))
     
-    print("NETWORK:")
-    print(net)
-    
     if binarization:
         for m in net.modules():
             if isinstance(m, DenseBinary):
                 m.synapse.binarize()
+                
+                
+    #for name, val in net.named_parameters():
+    #    if "weight" in name:
+    #        print(name, val.shape)
         
     
     ############################
@@ -461,7 +481,7 @@ if __name__ == "__main__":
                 mfcc_clean = mse_loss_mfcc_transformation(clean)
                 mfcc_denoised = mse_loss_mfcc_transformation(clean_rec)
                 loss = F.mse_loss(mfcc_clean, mfcc_denoised)
-        
+                        
             score = si_snr(clean_rec, clean)
 
             dnsmos_noisy += np.sum(dnsmos(noisy.cpu().data.numpy()), axis=0)
