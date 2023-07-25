@@ -36,10 +36,10 @@ class PositionalEncoding(nn.Module):
 
     
 
-class DNSModel(nn.Module):
+class DNSModelConformer(nn.Module):
   def __init__(self, sample_rate, n_fft, frame, stride, device, batch, phase, network, no_gpus=1):
-    super(DNSModel, self).__init__()
-    print("TRANSFORMER")
+    super(DNSModelConformer, self).__init__()
+    print("CONFORMER")
     self.model_type = "DNSModelBasic"
     self.sample_rate = sample_rate
     self.n_fft = n_fft
@@ -48,10 +48,11 @@ class DNSModel(nn.Module):
 
     self.d_model = network["d_model"]
     self.heads = network["heads"]
-    self.enc = network["enc"]
-    self.dec = network["dec"]
+    self.num_layers = network["num_layers"]
     self.d_ff = network["d_ff"]
     self.dropout = network["dropout"]
+    self.num_layers = network["num_layers"]
+    self.depthwise_conv_kernel_size = network["depthwise_conv_kernel_size"]
 
     self.length = 3001 - 1
     
@@ -68,29 +69,20 @@ class DNSModel(nn.Module):
     )
     self.linear_in = nn.Linear(self.fft_out_size, self.d_model)
     self.swish = nn.SiLU()
-    self.transformer = nn.Transformer(
-        d_model=self.d_model,
-        nhead=self.heads,
-        num_encoder_layers=self.enc,
-        num_decoder_layers=self.dec,
-        dim_feedforward=self.d_ff,
+    self.conformer = torchaudio.models.Conformer(
+        input_dim=self.d_model,
+        num_heads=self.heads,
+        ffn_dim=self.d_ff,
+        num_layers=self.num_layers,
+        depthwise_conv_kernel_size=self.depthwise_conv_kernel_size,
         dropout=self.dropout
     )
     self.linear_out = nn.Linear(self.d_model, self.fft_out_size)
 
 
-  def forward(self, src, tgt, TRAIN=True):
+  def forward(self, src, lengths):
 
-    src_spec = None
-    tgt_spec = None
-    if TRAIN:
-      # shift target by one
-      src_spec = src
-      #print(spec_src.shape)
-      tgt_spec = tgt[:,:,:-1].contiguous()
-    else:
-      src_spec = src
-      tgt_spec = tgt
+    src_spec = src
 
     ## Source ##
     #print("src_spec: ", src_spec.shape)
@@ -105,54 +97,19 @@ class DNSModel(nn.Module):
     #emb_src = emb_src.view(self.batch, src_spec.shape[1], self.d_model)
     #print("emb_src: ", emb_src.shape)
     emb_src = self.positional_encoder(emb_src)
-    emb_src = emb_src.permute(1,0,2)
-    #print("emb_src: ", emb_src.shape)
-
-    ## Target ##
-    tgt_mask = self.get_tgt_mask(tgt_spec.shape[2]).to(self.device)
-    tgt_spec = tgt_spec.permute(0,2,1)
-    flattened_tgt = tgt_spec
-    #print("flattened_src: ", flattened_src.shape)
-    reshaped_tgt = flattened_tgt.reshape(-1, self.fft_out_size)
-    emb_tgt = self.swish(self.linear_in(reshaped_tgt))
-    #print("emb_tgt: ", emb_tgt.shape)
-    emb_tgt = emb_tgt.view(self.batch, tgt_spec.shape[1], self.d_model)
-    #print("emb_tgt: ", emb_tgt.shape)
-    emb_tgt = self.positional_encoder(emb_tgt)
-    emb_tgt = emb_tgt.permute(1,0,2)
-    #print("emb_tgt: ", emb_tgt.shape)
       
     #print(emb_src.shape)
-    #print(emb_tgt.shape)
-    transformer_out = self.transformer(emb_src, emb_tgt, tgt_mask=tgt_mask)
+    transformer_out = self.conformer(emb_src, lengths)[0]
 
-    #reshaped_trans0 = transformer_out.view(-1, self.d_model)
+    #print("transformer_out ", transformer_out.shape)
+    #reshaped_trans0 = transformer_out.reshape(-1, self.d_model)
     #print("reshaped_trans0 ", reshaped_trans0.shape)
-    lin_out = self.linear_out(transformer_out)
+    lin_out = self.swish(self.linear_out(transformer_out))
+    #lin_out = lin_out.reshape(self.batch, src_spec.shape[1], self.fft_out_size)
     #print("lin_out ", lin_out.shape)
-    #lin_out = lin_out.view(tgt_spec.shape[1], self.batch, self.fft_out_size)
     lin_out = lin_out.permute(1,2,0)
     #print("lin_out ", lin_out.shape)
 
 
-    return lin_out
-
-    
-
-  def get_tgt_mask(self, size) -> torch.tensor:
-    # Generates a squeare matrix where the each row allows one word more to be seen
-    mask = torch.tril(torch.ones(size, size) == 1) # Lower triangular matrix
-    mask = mask.float()
-    mask = mask.masked_fill(mask == 0, float('-inf')) # Convert zeros to -inf
-    mask = mask.masked_fill(mask == 1, float(0.0)) # Convert ones to 0
-    
-    # EX for size=5:
-    # [[0., -inf, -inf, -inf, -inf],
-    #  [0.,   0., -inf, -inf, -inf],
-    #  [0.,   0.,   0., -inf, -inf],
-    #  [0.,   0.,   0.,   0., -inf],
-    #  [0.,   0.,   0.,   0.,   0.]]
-    
-    return mask
-    
+    return lin_out[:,:,:-1]
 

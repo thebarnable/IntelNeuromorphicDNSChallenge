@@ -14,15 +14,16 @@ from data.dataloader import DNSAudio
 
 # Custom
 from network import *
+from conformer_lstm import *
 from helper import *
 from fourier_transform import FourierTransform
-from config import config
+from conf_lstm_config import config
 
 
-TRAINING = True
-VALIDATION = False
 
-OFFSET = 1.5 # used for scaling factors to avoid division by 0
+
+
+OFFSET = 1 # used for scaling factors to avoid division by 0
 
 print("Starting DNS Transformer")
 no_gpus = torch.cuda.device_count()
@@ -40,6 +41,18 @@ args = parser.parse_args()
 tag = args.config
 print("Using Experiment with tag ", tag)
 pprint(config[tag])
+
+
+VALIDATION = False
+if ("validation" in config[tag]):
+  if config[tag]["validation"]:
+    print("VALIDATION")
+    VALIDATION = True
+TRAINING = (not VALIDATION)
+if TRAINING:
+  print("TRAINING")
+
+VALIDATION = (not TRAINING)
 
 
 # Check config
@@ -70,7 +83,7 @@ if load_pretrained:
   assert os.path.isdir(pretrained_dir), pretrained_dir + " does not exist"
   assert "pretrained_epoch" in config[tag], "pretrained_epoch is not in the configuration"
   assert config[tag]['pretrained_epoch'] > 0, "Number of epochs must be greater than 0"
-  pretrained_epoch = config[tag]['pretrained_epoch'] - 1
+  pretrained_epoch = config[tag]['pretrained_epoch']
 else:
   pretrained_epoch = 0
 
@@ -91,6 +104,11 @@ mse_mode = config[tag]['loss_mse']['mode']
 mse_weight = config[tag]['loss_mse']['weight']
 snr_weight = config[tag]['loss_snr']
 transformer = config[tag]['transformer']
+if "conformer" in transformer:
+  use_conformer = transformer['conformer']
+  print("Using CONFORMER")
+else:
+  use_conformer = False
 
 # limit number of CPU cores
 if device == "cpu":
@@ -128,7 +146,12 @@ def collate_fn(batch):
 ################## Complete DNSModelCoeff ##################
 ############################################################
 
-net = DNSModel(sample_rate, n_fft, frame, stride, device, batch, phase, transformer, no_gpus=no_gpus)
+if use_conformer:
+  net = DNSModelConformer(sample_rate, n_fft, frame, stride, device, batch, phase, transformer, no_gpus=no_gpus)
+else:
+  net = DNSModel(sample_rate, n_fft, frame, stride, device, batch, phase, transformer, no_gpus=no_gpus)
+net = nn.DataParallel(net.to(device))
+
 if load_pretrained:
   net.load_state_dict(torch.load("{}/model_epoch_{}.pt".format(pretrained_dir, pretrained_epoch)))
 
@@ -137,7 +160,6 @@ train_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
 print("No. params: ", params)
 print("No. trainable params: ", train_params)
 
-net = nn.DataParallel(net.to(device))
 train_loader = DataLoader(train_set, batch_size=batch, shuffle=True, collate_fn=collate_fn, num_workers=4, pin_memory=True)
 validation_loader = DataLoader(validation_set, batch_size=batch, shuffle=True, collate_fn=collate_fn, num_workers=4, pin_memory=True)
 
@@ -150,8 +172,10 @@ if load_pretrained:
 
 my_fourier = FourierTransform(n_fft, stride, frame)
 
+lengths = torch.Tensor([3001] * batch)
+
 for this_epoch in range(epochs):
-  epoch = this_epoch + pretrained_epoch + 1
+  epoch = this_epoch + pretrained_epoch
   print("EPOCH: ", epoch)
   #training
   if TRAINING:
@@ -191,7 +215,10 @@ for this_epoch in range(epochs):
           scaling_coeffs = torch.cat((scaling_coeffs_mag, phase_shift), dim=1)
         else:
           scaling_coeffs = scaling_coeffs_mag
-        net_out = net(net_src, scaling_coeffs)
+        if use_conformer:
+          net_out = net(net_src, lengths)
+        else:
+          net_out = net(net_src, scaling_coeffs)
 
         if phase:
           out_mag, out_phase = torch.split(net_out, split_size_or_sections=[int(n_fft/2) + 1, int(n_fft/2) + 1], dim=1)
@@ -215,7 +242,10 @@ for this_epoch in range(epochs):
         snr = torch.mean(si_snr(my_fourier.istft((tgt_mag[:,:,1:], tgt_phase[:,:,1:])), output))
         loss = mse_weight * mse + snr_weight * (100 - snr)
       else: # generative
-        output_spec = net(net_src, net_tgt)
+        if use_conformer:
+          output_spec = net(net_src, lengths)
+        else:
+          output_spec = net(net_src, net_tgt)
         if phase:
           out_mag, out_phase = torch.split(output_spec, split_size_or_sections=[int(n_fft/2) + 1, int(n_fft/2) + 1], dim=1)
           mse = F.mse_loss(net_tgt[:,:,1:], output_spec)
@@ -271,12 +301,10 @@ for this_epoch in range(epochs):
     t_st = datetime.now()
     net.eval()
     for i, (noisy, clean, noise) in enumerate(validation_loader):
-      print("validation_loader")
-      print(len(validation_loader), flush=True)
 
       with torch.no_grad():
         if i % 100 == 0:
-          print("{}/{}".format(i, len(train_loader)))
+          print("{}/{}".format(i, len(validation_loader)))
 
         noisy = noisy.to(device)
         clean = clean.to(device)
@@ -284,44 +312,94 @@ for this_epoch in range(epochs):
         src = my_fourier.stft(noisy)
         tgt = my_fourier.stft(clean)
 
-        src_phase = None
-        tgt_phase = None
         src_phase = src[1]
-        src = src[0]
+        src_mag = src[0]
+        src_mag = src_mag/torch.max(torch.abs(src_mag))
+
         tgt_phase = tgt[1]
-        tgt = tgt[0]
+        tgt_mag = tgt[0]
+        tgt_mag = tgt_mag/torch.max(torch.abs(tgt_mag))
 
-        #dec_in = torch.zeros((batch, 257, 1))
-        coeffs_out = torch.zeros((batch, 257, 1)) # TODO use first noisy frame as best approximation that we have
-        coeffs_out = coeffs_out.to(device)
-        for _ in range(3001):
-          #print("test", flush=True)
-          next_item = net(src, coeffs_out, TRAIN=False)
-          #for k in range(next_item.shape[2]):
-          #  print(next_item[0,0,k])
-          #print("next_item ", next_item.shape)
+        if phase:
+          net_src = torch.cat((src_mag, src_phase), dim=1)
+          net_tgt = torch.cat((tgt_mag, tgt_phase), dim=1)
+        else:
+          net_src = src_mag
+          net_tgt = tgt_mag
 
-          # Concatenate previous input with predicted best word
-          coeffs_out = torch.cat((coeffs_out, next_item[:,:,-1:]), dim=2)
-          #dec_in = next_item
-          #print("next_item ", next_item.shape)
+        if network == "scaling":
+          scaling_coeffs_mag = tgt_mag/(src_mag + OFFSET)
+          if phase:
+            phase_shift = tgt_phase - src_phase
+            scaling_coeffs = torch.cat((scaling_coeffs_mag, phase_shift), dim=1)
+          else:
+            scaling_coeffs = scaling_coeffs_mag
+          if use_conformer:
+            net_out = net(net_src, lengths)
+          else:
+            net_out = net(net_src, scaling_coeffs)
+            #print(phase_shift, flush=True)
+            #net_out = net(net_src, scaling_coeffs)
+            #coeffs_out = scaling_coeffs[:,:,:1]
+            for i in range(3000):
+              next_item = net(net_src, coeffs_out, TRAIN=False)
+              coeffs_out = torch.cat((coeffs_out, next_item[:,:,-1:]), dim=2)
+              #print(coeffs_out, flush=True)
+              #coeffs_out = torch.cat((coeffs_out, scaling_coeffs[:,:,i+1:i+2]), dim=2)
+            net_out = coeffs_out[:,:,1:]
+            torch.set_printoptions(threshold=1000)
+            np.set_printoptions(threshold=1000)
+            #print(net_out)
 
-        coeffs_out = coeffs_out[:,:,1:-1]
-        output = my_fourier.istft(((src[:,:,1:]+OFFSET)*coeffs_out, src_phase[:, :, 1:]))
+          if phase:
+            out_mag, out_phase = torch.split(net_out, split_size_or_sections=[int(n_fft/2) + 1, int(n_fft/2) + 1], dim=1)
+            out_mag = (src_mag[:,:,1:]+OFFSET) * out_mag 
+            out_phase = src_phase[:, :, 1:] + out_phase
+
+            output_spec = torch.cat((out_mag, out_phase), dim=1)
+            if mse_mode == "scale":
+              mse = F.mse_loss(scaling_coeffs[:,:,1:], net_out)
+            else:
+              mse = F.mse_loss(net_tgt[:,:,1:], output_spec)
+          else:
+            output_spec = (net_src[:,:,1:]+OFFSET)*net_out
+            out_mag = output_spec
+            out_phase = src_phase[:, :, 1:]
+            if mse_mode == "scale":
+              mse = F.mse_loss(scaling_coeffs[:,:,1:], net_out)
+            else:
+              mse = F.mse_loss(tgt_mag[:,:,1:], output_spec)
+          output = my_fourier.istft((out_mag, out_phase))
+          snr = torch.mean(si_snr(my_fourier.istft((tgt_mag[:,:,1:], tgt_phase[:,:,1:])), output))
+          loss = mse_weight * mse + snr_weight * (100 - snr)
+        else: # generative
+          if use_conformer:
+            output_spec = net(net_src, lengths)
+          else:
+            #output_spec = net(net_src, net_tgt)
+            for _ in range(3000):
+              next_item = net(net_src, coeffs_out, TRAIN=False)
+              coeffs_out = torch.cat((coeffs_out, next_item[:,:,-1:]), dim=2)
+            output_spec = coeffs_out[:,:,1:]
+
+          if phase:
+            out_mag, out_phase = torch.split(output_spec, split_size_or_sections=[int(n_fft/2) + 1, int(n_fft/2) + 1], dim=1)
+            mse = F.mse_loss(net_tgt[:,:,1:], output_spec)
+          else:
+            out_mag = output_spec
+            out_phase = src_phase[:, :, 1:]
+            mse = F.mse_loss(net_tgt[:,:,1:], out_mag)
+          output = my_fourier.istft((out_mag, out_phase))
+          snr = torch.mean(si_snr(my_fourier.istft((tgt_mag[:,:,1:], tgt_phase[:,:,1:])), output))
+          loss = mse_weight * mse + snr_weight * (100 - snr)
         
-        tgt = tgt[:,:,1:].contiguous()
+        tgt = net_tgt[:,:,1:].contiguous()
 
-        snr = torch.mean(si_snr(my_fourier.istft((tgt, tgt_phase[:,:,1:])), output))
-        #loss = lam * F.mse_loss(coeffs_out, tgt) + (100 - torch.mean(score))
-        mse = F.mse_loss(coeffs[:,:,1:], coeffs_out)
-
-        loss = mse
-        
         assert torch.isnan(loss) == False
         
-        print("snr: {}".format(snr.item()))
-        print("mse: {}".format(mse.item()))
-        print("loss: {}".format(loss.item()), flush=True)
+        print("s_v {}".format(snr.item()))
+        print("m_v {}".format(mse.item()))
+        print("l_v {}".format(loss.item()), flush=True)
 
         total_loss += loss.detach().item()
         if i == 0:

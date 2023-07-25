@@ -63,7 +63,7 @@ config = {
     "device" : "cuda",
     "network" : "scaling",
     "epochs" : 1,
-    "batch" : 3,
+    "batch" : 1,
     "phase" : True,
     "optimizer" : "Adam",
     "lr" : 0.01,
@@ -73,7 +73,7 @@ config = {
     "frame_s" : 0.025,
     "stride_s" : 0.01,
     "loss_mse" :  {
-                    "mode" : "frequency",
+                    "mode" : "scale",
                     "weight" : 1
                   },
     "loss_snr" : 0.1,
@@ -90,9 +90,9 @@ config = {
     "device" : "cuda",
     "network" : "scaling",
     "epochs" : 1,
-    "batch" : 6,
+    "batch" : 4,
     "phase" : False,
-    "optimizer" : "Adam",
+    "optimizer" : "SGD",
     "lr" : 0.01,
     "momentum" : 0,
     "sample_rate" : 16000,
@@ -100,7 +100,7 @@ config = {
     "frame_s" : 0.025,
     "stride_s" : 0.01,
     "loss_mse" :  {
-                    "mode" : "frequency",
+                    "mode" : "scale",
                     "weight" : 1
                   },
     "loss_snr" : 0.1,
@@ -114,7 +114,92 @@ config = {
                     }
   },
 
+
+
   # continue training
+  'scaling_2_SGD_lr0_1' : {
+    "device" : "cuda",
+    "network" : "scaling",
+    "epochs" : 1,
+    "batch" : 2,
+    "phase" : True,
+    "optimizer" : "SGD",
+    "lr" : 0.1,
+    "momentum" : 0,
+    "sample_rate" : 16000,
+    "n_fft" : 512,
+    "frame_s" : 0.025,
+    "stride_s" : 0.01,
+    "loss_mse" :  {
+                    "mode" : "scale",
+                    "weight" : 1
+                  },
+    "loss_snr" : 0.1,
+    "transformer" : {
+                      "d_model" : 256,
+                      "heads" : 8,
+                      "enc" : 4,
+                      "dec" : 4,
+                      "d_ff" : 256,
+                      "dropout" : 0.1
+                    }
+  },
+  'scaling_2_SGD_no_phase' : {
+    "device" : "cuda",
+    "network" : "scaling",
+    "epochs" : 1,
+    "batch" : 2,
+    "phase" : False,
+    "optimizer" : "SGD",
+    "lr" : 0.01,
+    "momentum" : 0,
+    "sample_rate" : 16000,
+    "n_fft" : 512,
+    "frame_s" : 0.025,
+    "stride_s" : 0.01,
+    "loss_mse" :  {
+                    "mode" : "scale",
+                    "weight" : 1
+                  },
+    "loss_snr" : 0.1,
+    "transformer" : {
+                      "d_model" : 256,
+                      "heads" : 8,
+                      "enc" : 4,
+                      "dec" : 4,
+                      "d_ff" : 256,
+                      "dropout" : 0.1
+                    }
+  },
+  'scaling_2_SGD_e30_e50' : {
+    "device" : "cuda",
+    "network" : "scaling",
+    "pretrained" : "scaling_2_SGD_e10_e30",
+    "pretrained_epoch" : 30,
+    "epochs" : 20,
+    "batch" : 2,
+    "phase" : True,
+    "optimizer" : "SGD",
+    "lr" : 0.01,
+    "momentum" : 0,
+    "sample_rate" : 16000,
+    "n_fft" : 512,
+    "frame_s" : 0.025,
+    "stride_s" : 0.01,
+    "loss_mse" :  {
+                    "mode" : "scale",
+                    "weight" : 1
+                  },
+    "loss_snr" : 0.1,
+    "transformer" : {
+                      "d_model" : 256,
+                      "heads" : 8,
+                      "enc" : 4,
+                      "dec" : 4,
+                      "d_ff" : 256,
+                      "dropout" : 0.1
+                    }
+  },
   'scaling_2_SGD_e10_e30' : {
     "device" : "cuda",
     "network" : "scaling",
