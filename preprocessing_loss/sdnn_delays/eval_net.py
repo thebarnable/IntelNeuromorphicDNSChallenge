@@ -194,7 +194,7 @@ if __name__ == "__main__":
                             pin_memory=True)
 
     validation_loader = DataLoader(validation_set,
-                                batch_size=32,
+                                batch_size=4,
                                 sampler=valid_sampler,
                                 collate_fn=collate_fn,
                                 num_workers=4,
