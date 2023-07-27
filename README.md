@@ -1,4 +1,34 @@
 # Readme
+## Installation
+
+```
+cd <workspace>
+
+#conda (optional): conda create -n intel_dns Python=3.10.6 && conda activate intel_dns
+#venv (optional): python -m venv venv_intel_dns && source venv_intel_dns/bin/activate
+
+wget https://github.com/lava-nc/lava/releases/download/v0.7.0/lava_nc-0.7.0.tar.gz
+pip install lava_nc-0.7.0.tar.gz
+rm lava_nc-0.7.0.tar.gz
+
+wget https://github.com/lava-nc/lava-dl/releases/download/v0.3.3/lava_dl-0.3.3.tar.gz
+pip install lava_dl-0.3.3.tar.gz
+rm lava_dl-0.3.3.tar.gz
+
+git clone git@github.com:thebarnable/IntelNeuromorphicDNSChallenge.git
+cd IntelNeuromorphicDNSChallenge
+git submodule update --init
+
+pip install -r requirements.txt
+pip install tensorboard
+
+python -c "import os; from distutils.sysconfig import get_python_lib; open(get_python_lib() + os.sep + 'ndns.pth', 'a').write(os.getcwd())"
+
+# start training to check if everything works
+python baseline_solution/sdnn_delays/train_sdnn.py -path /mnt/data4tb/stadtmann/dns_challenge_4/datasets_fullband/ [-out /mnt/data4tb/stadtmann/dns_challenge_4/tensorboard_logs/<custom-log-dir>/]
+```
+
+## Introduction
 
 ## Installation
 
@@ -301,7 +331,11 @@ Please refer to the [Intel N-DNS Challenge paper](https://arxiv.org/abs/2303.095
 
 ## Metricsboard
 
-The evaluation metrics for participant solutions will be listed below at regular intervals. The entries will be updated with the best solution of the team. Please create a table in markdown (.md) akin to the one below in the Github repository that you share with Intel so that we can import your metrics and update them on the public metricsboard. This will help you meaure the progress of your solution against other participating teams. Earlier submissions are encouraged.
+The evaluation metrics for participant solutions will be listed below and updated at regular intervals.
+
+Submitting to the metricsboard will help you meaure the progress of your solution against other participating teams. Earlier submissions are encouraged.
+
+To submit to the metricsboard, please create a ```.yml``` file with contents akin to the table below in the top level of the Github repository that you share with Intel so that we can import your metrics and update them on the public metricsboard. Please use [```example_metricsboard_writeout.py```](https://github.com/IntelLabs/IntelNeuromorphicDNSChallenge/blob/main/example_metricsboard_writeout.py) as an example for how to generate a valid ```.yml``` file with standard key names. For the Track 1 validation set, name the ```.yml``` file ```metricsboard_track_1_validation.yml```.
 
 **Track 1**
 
