@@ -203,13 +203,6 @@ if __name__ == "__main__":
             n_fft=n_fft, window_fn=window_fn_mfcc)
         
         H_vals, map = calculate_filter_banks(n_fft, n_mfcc, 16000, device)
-
-    if transformation == "mdct":
-        if mse_loss_type == "stft":
-            raise Exception("STFT as MSE loss type is not possible when transformation=mdct")
-        
-        mdct = MDCT(512).to(device)
-        inv_mdct = InverseMDCT(512).to(device)
     
     if mse_loss_type == "mfcc":
         mse_loss_mfcc_transformation = torchaudio.transforms.MFCC(n_mfcc = n_mfcc, melkwargs = {"window_fn" : lambda n:torch.hann_window(n, device = device), 
@@ -225,9 +218,9 @@ if __name__ == "__main__":
     if n_phase_features != 0:
         print("Using %d phase features" % n_phase_features)
         phase_feature_indices = torch.from_numpy(np.round(np.linspace(0, n_fft // 2, n_phase_features)).astype(int)).to(device)
-    n_input = n_fft // 2 + 1 + n_phase_features if transformation == "stft" else 256 if transformation == "mdct" else n_mfcc
+    n_input = n_fft // 2 + 1 + n_phase_features if transformation == "stft" else n_mfcc
     if n_hidden is None:
-        n_hidden = n_fft + 2*n_phase_features if transformation == "stft" else 512 if transformation == "mdct" else int(n_mfcc * hidden_input_ratio)
+        n_hidden = n_fft + 2*n_phase_features if transformation == "stft" else else int(n_mfcc * hidden_input_ratio)
 
     if arch == "baseline":
         net = InferenceNet(args['threshold'],
@@ -338,10 +331,6 @@ if __name__ == "__main__":
 
                     clean_rec, denoised_abs = reconstruct_wave_from_mfcc(n_fft, noisy_abs, noisy_arg, filter_banked, torch.exp(denoised_mfcc), H_vals, map, inv_spec_transformation)
                 
-                elif transformation == "mdct":
-                    mdct_features = mdct(noisy)
-                    denoised_mdct, count = net(mdct_features)
-                    clean_rec = inv_mdct(denoised_mdct)[:, :480000]
                          
                 train_event_counts.append(count.cpu().data.numpy())
 
@@ -469,11 +458,6 @@ if __name__ == "__main__":
                 clean = slayer.axon.delay(clean, n_fft // 4 * out_delay)
 
                 clean_rec, denoised_abs = reconstruct_wave_from_mfcc(n_fft, noisy_abs, noisy_arg, filter_banked, torch.exp(denoised_mfcc), H_vals, map, inv_spec_transformation)
-            
-            elif transformation == "mdct":
-                mdct_features = mdct(noisy)
-                denoised_mdct, count = net(mdct_features)
-                clean_rec = inv_mdct(denoised_mdct)[:, :480000]
 
 
             valid_event_counts.append(count.cpu().data.numpy())
@@ -563,9 +547,6 @@ if __name__ == "__main__":
             filter_banked = torch.matmul(H_vals, abs) + 1e-10
             mfcc = torch.log(filter_banked)
             clean_rec, denoised_abs = reconstruct_wave_from_mfcc(n_fft, abs, arg, filter_banked, torch.exp(mfcc), H_vals, map, inv_spec_transformation)
-        elif transformation == "mdct":
-            mdct_features = mdct(audio)
-            clean_rec = inv_mdct(mdct_features)[:, :480000]
 
     time_elapsed = (datetime.now() - t_st).total_seconds()
 
