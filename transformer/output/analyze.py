@@ -5,7 +5,7 @@ from pprint import pprint
 
 MOVING_AVERAGE = True
 WINDOW_SIZE = 500
-MERGE = True
+MERGE = False
 
 
 #def mov_avg(my_list):
@@ -313,7 +313,7 @@ conformer_lstm_lr05_snr02_contd_e4 = [
 ]
 
 my_list = new_conf_lstm_promising + new_conf_lstm_explore + new_conf_lstm_explore_2  # TODO choose list
-my_list = conformer_lstm_lr05_snr02_lr01
+my_list = new_conf_lstm_explore_local
 #my_list = ["conformer_lstm_lr05_snr02.out", "conformer_lstm_lr05.out", "conformer_lstm_lr_05_mse05.out"]
 #my_list = ["conformer_lstm_1_03.out", "conformer_lstm_1_1.out"]
 

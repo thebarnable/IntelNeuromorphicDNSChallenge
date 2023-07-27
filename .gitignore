@@ -9,3 +9,5 @@ dataset
 trained_model
 trained_model_gpu01
 waveglow
+transformer/genetic
+**.pkl

@@ -37,7 +37,7 @@ class PositionalEncoding(nn.Module):
     
 
 class DNSModelConformer(nn.Module):
-  def __init__(self, sample_rate, n_fft, frame, stride, device, batch, phase, network, no_gpus=1):
+  def __init__(self, sample_rate, n_fft, frame, stride, device, batch, phase, network, length=3001, no_gpus=1):
     print("CONFORMER_LSTM")
     super(DNSModelConformer, self).__init__()
     self.model_type = "DNSModelBasic"
@@ -51,10 +51,12 @@ class DNSModelConformer(nn.Module):
     self.num_layers = network["num_layers"]
     self.d_ff = network["d_ff"]
     self.dropout = network["dropout"]
-    self.num_layers = network["num_layers"]
     self.depthwise_conv_kernel_size = network["depthwise_conv_kernel_size"]
+    self.lstm_layers = 1
+    if "lstm_layers" in network:
+      self.lstm_layers = network["lstm_layers"]
 
-    self.length = 3001 - 1
+    self.length = length - 1
     
     self.batch = int(batch/no_gpus)
     self.device = device
@@ -77,7 +79,7 @@ class DNSModelConformer(nn.Module):
         depthwise_conv_kernel_size=self.depthwise_conv_kernel_size,
         dropout=self.dropout
     )
-    self.lstm = nn.LSTM(input_size=256, hidden_size=256, num_layers=1)
+    self.lstm = nn.LSTM(input_size=self.d_model, hidden_size=self.d_model, num_layers=self.lstm_layers)
     self.linear_out = nn.Linear(self.d_model, self.fft_out_size)
 
 
@@ -114,5 +116,5 @@ class DNSModelConformer(nn.Module):
     #print("lin_out ", lin_out.shape, flush=True)
 
 
-    return lin_out[:,:,:-1]
+    return lin_out[:,:,:]
 
