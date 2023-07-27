@@ -15,7 +15,6 @@ from torch.utils.tensorboard import SummaryWriter
 import torchaudio.transforms
 from time import time
 
-from utility.torch_mdct import MDCT, InverseMDCT
 from utility.quantization import *
 from utility.helpers import *
 from utility.audio_dataloader import DNSAudio
@@ -91,16 +90,16 @@ if __name__ == '__main__':
                         default='runs/',
                         help='results path')
 
-    ##########################################
-    # Additional ENCODING/DECODING arguments #
-    ##########################################
+    ########################
+    # Additional arguments #
+    ########################
 
     # STFT arguments
     parser.add_argument("-stft_window", type=str, choices=["hann", "hamming", "gaussian", "bartlett", "rectangle"],
                         default="rectangle", help="window function for STFT (considered if transformation=stft or transformation=mfcc)")
 
     # transformation type
-    parser.add_argument("-transformation", type=str, choices=["stft", "mfcc", "mdct"],
+    parser.add_argument("-transformation", type=str, choices=["stft", "mfcc"],
                         default="stft", help="transformation that is applied as encoding/decoding")
 
     # number of mfcc components
@@ -123,7 +122,7 @@ if __name__ == '__main__':
 
     # learn rate scheduler
     parser.add_argument("-lr_scheduler", type=str, default=None, choices=[
-                        None, "linear", "mult", "step", "multistep", "mult2"], help="Type of learn rate scheduler")
+                        None, "linear", "mult", "step", "multistep", "mult2", "multistep2", "multistep3"], help="Type of learn rate scheduler")
 
     # Data augmentation
     parser.add_argument("-data_aug_factor", type=float, default=0,
@@ -174,7 +173,7 @@ if __name__ == '__main__':
     parser.add_argument("-debug_weights", type=bool, default = False, help="Enable debugging of weights")
     
     # Additional loss
-    parser.add_argument("-loss_non_original", type=bool, default=False, help="Add an addition loss to prevent network to learn output=input")
+    parser.add_argument("-loss_non_original", type=bool, default=False, help="Add an additional loss to prevent network from learning output=input")
     
 
     args = parser.parse_args()
@@ -217,24 +216,25 @@ if __name__ == '__main__':
         phase_feature_indices = torch.from_numpy(np.round(np.linspace(
             0, args.n_fft // 2, n_phase_features)).astype(int)).to(device)
     n_input = args.n_fft // 2 + 1 + \
-        n_phase_features if args.transformation == "stft" else 256 if args.transformation == "mdct" else args.n_mfcc
+        n_phase_features if args.transformation == "stft" else args.n_mfcc
     #n_hidden = args.n_fft + 2 * \
-    #    n_phase_features if args.transformation == "stft" else 512 if args.transformation == "mdct" else int(
+    #    n_phase_features if args.transformation == "stft" else int(
     #        args.n_mfcc * args.hidden_input_ratio)
     n_hidden = args.n_hidden
 
     out_delay = args.out_delay
     
     if args.architecture == "baseline":
-        net = Network(args.threshold, args.tau_grad, args.scale_grad, args.dmax,
-                      args.out_delay, n_input, n_hidden, args.n_layers, args.batch_norm, args.dropout, args.binarization, args.ternarization,
-                      args.quantization, obs).to(device)
+        net = Network(args.threshold, args.tau_grad, args.scale_grad, args.dmax, args.out_delay,
+                      n_input, n_hidden, args.n_layers, args.batch_norm, args.dropout, 
+                      args.binarization, args.ternarization, args.quantization, obs).to(device)
     elif args.architecture == "conv":
-        if args.quantization or args.binarization or args.ternarization:
-            raise Exception("Quantization, Binarization and Ternarization is not implemented for the Conv Network") 
+        if args.quantization or args.binarization:
+            raise Exception("Quantization and Binarization is not implemented for the Conv Network") 
         
         net = ConvNetwork(args.threshold, args.tau_grad, args.scale_grad, args.dmax,
-                      args.out_delay, n_input, n_hidden, args.n_layers, args.batch_norm, args.dropout, args.kernel_size).to(device)
+                      args.out_delay, n_input, n_hidden, args.n_layers, args.batch_norm, 
+                      args.dropout, args.kernel_size, args.ternarization, obs).to(device)
     
     
     if len(args.gpu) == 1:
@@ -270,6 +270,12 @@ if __name__ == '__main__':
     elif args.lr_scheduler == "mult2":
         lr_scheduler = torch.optim.lr_scheduler.MultiplicativeLR(
             optimizer, lambda ep: 1 if ep < 5 or ep >= 60 else 0.85, verbose=True)
+    elif args.lr_scheduler == "multistep2":
+        lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
+            optimizer, milestones=[13,20,30,40], gamma=0.1, verbose=True)
+    elif args.lr_scheduler == "multistep3":
+        lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
+            optimizer, milestones=[15,25,35,40], gamma=0.1, verbose=True)
 
     train_set = DNSAudio(root=args.path + 'training_set/')
     validation_set = DNSAudio(root=args.path + 'validation_set/')
@@ -330,13 +336,6 @@ if __name__ == '__main__':
         H_vals, map = calculate_filter_banks(
             args.n_fft, args.n_mfcc, 16000, device)
 
-    if args.transformation == "mdct":
-        if args.mse_loss_type == "stft":
-            raise Exception(
-                "STFT as MSE loss type is not possible when transformation=mdct")
-
-        mdct = MDCT(512).to(device)
-        inv_mdct = InverseMDCT(512).to(device)
 
     if args.mse_loss_type == "mfcc":
         mse_loss_mfcc_transformation = torchaudio.transforms.MFCC(n_mfcc=args.n_mfcc, melkwargs={"window_fn": lambda n: torch.hann_window(n, device=device),
@@ -418,10 +417,6 @@ if __name__ == '__main__':
                 clean_rec, denoised_abs = reconstruct_wave_from_mfcc(
                     args.n_fft, noisy_abs, noisy_arg, filter_banked, torch.exp(denoised_mfcc), H_vals, map, inv_spec_transformation)
 
-            elif args.transformation == "mdct":
-                mdct_features = mdct(noisy)
-                denoised_mdct = net(mdct_features)
-                clean_rec = inv_mdct(denoised_mdct)[:, :480000]
 
             if args.mse_loss_type == "stft":
                 mse_loss = lam * F.mse_loss(denoised_abs, clean_abs)
@@ -436,10 +431,10 @@ if __name__ == '__main__':
                 
             loss_add = 0
             if args.loss_non_original:
-                loss_add = 1e-2 * torch.abs((0.5 - F.mse_loss(denoised_abs, noisy_abs)))
+                #loss_add = 1e-2 * torch.abs((0.5 - F.mse_loss(denoised_abs, noisy_abs)))
+                loss_add = 0 if torch.abs((0.5 - F.mse_loss(denoised_abs, noisy_abs))) < 0.2 else 1e-2 * (torch.abs((0.5 - F.mse_loss(denoised_abs, noisy_abs))) - 0.2)
 
             loss = mse_loss + signal_loss + loss_add
-            print(mse_loss.item(), signal_loss.item())
 
             if torch.isnan(loss):
                 print("WARNING: NaN detected in loss! MSE loss: %.5f, Signal loss:%.5f, Total Loss: %.5f" % (
@@ -461,10 +456,9 @@ if __name__ == '__main__':
                         m.synapse.load_non_binary_weights()
             elif args.ternarization:
                 for m in net.modules():
-                    if isinstance(m, DenseTernary):
+                    if isinstance(m, DenseTernary) or isinstance(m, TernaryConv):
                         m.synapse.load_non_ternary_weights()
                 
-            
             optimizer.step()
             
             if args.binarization:
@@ -474,7 +468,7 @@ if __name__ == '__main__':
                         m.synapse.save_non_binary_weights()
             elif args.ternarization:
                 for m in net.modules():
-                    if isinstance(m, DenseTernary):
+                    if isinstance(m, DenseTernary) or isinstance(m, TernaryConv):
                         m.synapse.clamp()
                         m.synapse.save_non_ternary_weights()
 
@@ -563,11 +557,7 @@ if __name__ == '__main__':
 
                     clean_rec, denoised_abs = reconstruct_wave_from_mfcc(
                         args.n_fft, noisy_abs, noisy_arg, filter_banked, torch.exp(denoised_mfcc), H_vals, map, inv_spec_transformation)
-                # USING MDCT
-                elif args.transformation == "mdct":
-                    mdct_features = mdct(noisy)
-                    denoised_mdct = net(mdct_features)
-                    clean_rec = inv_mdct(denoised_mdct)[:, :480000]
+
 
                 if args.mse_loss_type == "stft":
                     mse_loss = lam * F.mse_loss(denoised_abs, clean_abs)

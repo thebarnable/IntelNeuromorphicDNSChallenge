@@ -26,7 +26,7 @@ class LayerDenseBinary(slayer.synapse.layer.Dense):
             
     def binarize(self):
         self.save_non_binary_weights()
-        weight_bin = self.weight.clone()
+        weight_bin = self.weight.clone().detach()
         weight_bin.add_(1).div_(2).clamp_(0,1)
         weight_bin.round_()
         weight_bin = weight_bin.mul_(2).add_(-1)
@@ -34,18 +34,18 @@ class LayerDenseBinary(slayer.synapse.layer.Dense):
         if self._pre_hook_fx is not None:
             weight_bin = self._pre_hook_fx(weight_bin)
         
-        self.weight.data = weight_bin
+        self.weight.data.copy_(weight_bin.detach())
         
     def save_non_binary_weights(self):
         if not hasattr(self, "non_bin_weight"):
-            self.non_bin_weight = torch.clone(self.weight)
-        self.non_bin_weight.data.copy_(self.weight.data)
+            self.non_bin_weight = self.weight.clone().detach()
+        self.non_bin_weight.data.copy_(self.weight.detach())
         
     def load_non_binary_weights(self):
-        self.weight.data.copy_(self.non_bin_weight.data)
+        self.weight.data.copy_(self.non_bin_weight.detach())
         
     def clamp(self):
-        self.weight.data.clamp_(-1,1)
+        self.weight.data.clamp_(-1,1).detach_()
         
 class LayerDenseTernary(slayer.synapse.layer.Dense):
     # overwrite Dense layer forward method
@@ -70,8 +70,8 @@ class LayerDenseTernary(slayer.synapse.layer.Dense):
     def ternarize(self):
         self.save_non_ternary_weights()
         
-        weight_ter = self.weight.clone()
-        thresh = weight_ter.data.abs().sum() / weight_ter.data.numel()
+        weight_ter = self.weight.clone().detach()
+        thresh = weight_ter.abs().sum() / weight_ter.data.numel()
         thresh *= 0.7
 
         weight_ter[weight_ter>thresh] = 1
@@ -81,18 +81,18 @@ class LayerDenseTernary(slayer.synapse.layer.Dense):
         if self._pre_hook_fx is not None:
             weight_ter = self._pre_hook_fx(weight_ter)
         
-        self.weight.data = weight_ter
+        self.weight.data.copy_(weight_ter.detach())
         
     def save_non_ternary_weights(self):
         if not hasattr(self, "non_tern_weight"):
-            self.non_tern_weight = torch.clone(self.weight)
-        self.non_tern_weight.data.copy_(self.weight.data)
+            self.non_tern_weight = self.weight.clone().detach()
+        self.non_tern_weight.data.copy_(self.weight.detach())
         
     def load_non_ternary_weights(self):
-        self.weight.data.copy_(self.non_tern_weight.data)
+        self.weight.data.copy_(self.non_tern_weight.detach())
         
     def clamp(self):
-        self.weight.data.clamp_(-1,1)
+        self.weight.data.clamp_(-1,1).detach_()
 
 class LayerDenseQuant(slayer.synapse.layer.Dense):
     def __init__(self, obs,
@@ -153,6 +153,58 @@ class DenseQuant(slayer.block.sigma_delta.AbstractSDRelu, slayer.block.base.Abst
     def __init__(self, obs, *args, **kwargs):
         super(DenseQuant, self).__init__(*args, **kwargs)
         self.synapse = LayerDenseQuant(obs, **self.synapse_params)
+        if 'pre_hook_fx' not in kwargs.keys():
+            self.synapse.pre_hook_fx = self.neuron.quantize_8bit
+        del self.synapse_params
+   
+class LayerTernaryConv(slayer.synapse.layer.Conv):
+    def __init__(
+        self, obs, in_features, out_features, kernel_size,
+        stride=1, padding=0, dilation=1, groups=1,
+        weight_scale=1, weight_norm=False, pre_hook_fx=None
+    ):
+        super(LayerTernaryConv, self).__init__(in_features, out_features, kernel_size,
+        stride, padding, dilation, groups,
+        weight_scale, weight_norm, pre_hook_fx)
+        
+        self.obs = obs
+    
+    def forward(self, input):
+        self.ternarize()
+        
+        return super(LayerTernaryConv, self).forward(input)
+            
+    def ternarize(self):
+        self.save_non_ternary_weights()
+        
+        weight_ter = self.weight.clone().detach()
+        thresh = weight_ter.abs().sum() / weight_ter.data.numel()
+        thresh *= 0.7
+
+        weight_ter[weight_ter>thresh] = 1
+        weight_ter[weight_ter<-thresh] = -1
+        weight_ter[weight_ter.data.abs()<=thresh] = 0
+
+        if self._pre_hook_fx is not None:
+            weight_ter = self._pre_hook_fx(weight_ter)
+        
+        self.weight.data.copy_(weight_ter.detach())
+        
+    def save_non_ternary_weights(self):
+        if not hasattr(self, "non_tern_weight"):
+            self.non_tern_weight = self.weight.clone().detach()
+        self.non_tern_weight.data.copy_(self.weight.detach())
+        
+    def load_non_ternary_weights(self):
+        self.weight.data.copy_(self.non_tern_weight.detach())
+        
+    def clamp(self):
+        self.weight.data.clamp_(-1,1).detach_()
+        
+class TernaryConv(slayer.block.sigma_delta.AbstractSDRelu, slayer.block.base.AbstractConv):
+    def __init__(self, obs, *args, **kwargs):
+        super(TernaryConv, self).__init__(*args, **kwargs)
+        self.synapse = LayerTernaryConv(obs, **self.synapse_params)
         if 'pre_hook_fx' not in kwargs.keys():
             self.synapse.pre_hook_fx = self.neuron.quantize_8bit
         del self.synapse_params

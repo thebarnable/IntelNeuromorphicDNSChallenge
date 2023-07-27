@@ -33,7 +33,10 @@ class Network(torch.nn.Module):
         }
         
         if dropout:
-            sigma_params["dropout"] = slayer.neuron.dropout.Dropout(1e-4, inplace=True)
+            sigma_params["dropout"] = slayer.neuron.dropout.Dropout(1e-3, inplace=True)
+            
+        if batch_norm:
+            sigma_params["norm"] = slayer.neuron.norm.MeanOnlyBatchNorm
         
         sdnn_params = {
             **sigma_params,
@@ -74,10 +77,6 @@ class Network(torch.nn.Module):
         
         for i in range(1, n_layers+1):
             self.blocks[i].delay.max_delay = max_delay
-        
-        if batch_norm:
-            for i in range(n_layers+1, 1, -1):
-                self.blocks.insert(i, slayer.neuron.norm.MeanOnlyBatchNorm(num_features=n_hidden))
                 
         print("Created network:")
         print(self)                
@@ -127,7 +126,7 @@ class Network(torch.nn.Module):
 class ConvNetwork(torch.nn.Module):
 
     def __init__(self, threshold=0.1, tau_grad=0.1, scale_grad=0.8, max_delay=64, out_delay=0, n_input=257,
-                 n_hidden=512, n_layers=5, batch_norm = False, dropout=False, kernel_size=5):
+                 n_hidden=512, n_layers=5, batch_norm = False, dropout=False, kernel_size=5, ternarization=False, obs=None):
         super().__init__()
 
         self.stft_mean = 0.2
@@ -144,7 +143,10 @@ class ConvNetwork(torch.nn.Module):
         }
         
         if dropout:
-            sigma_params["dropout"] = slayer.neuron.dropout.Dropout(1e-4, inplace=True)
+            sigma_params["dropout"] = slayer.neuron.dropout.Dropout(1e-3, inplace=True)
+            
+        if batch_norm:
+            sigma_params["norm"] = slayer.neuron.norm.MeanOnlyBatchNorm
         
         sdnn_params = {
             **sigma_params,
@@ -156,28 +158,27 @@ class ConvNetwork(torch.nn.Module):
         padding = (0, kernel_size//2)
         kernel_size = (1,kernel_size)
 
-        self.blocks = torch.nn.ModuleList([
-            slayer.block.sigma_delta.Input(sdnn_params),
-            slayer.block.sigma_delta.Conv(sdnn_params, in_features=n_input, out_features=n_hidden, kernel_size=kernel_size, 
-                                          weight_norm=False, delay=False, delay_shift=False, padding=padding)] +
-            (n_layers - 1) * [slayer.block.sigma_delta.Conv(sdnn_params, in_features=n_hidden, out_features=n_hidden,
-                                                           kernel_size=kernel_size, weight_norm=False, delay=False, delay_shift=False, padding=padding)] +
-            [slayer.block.sigma_delta.Output(sdnn_params, n_hidden, n_input, weight_norm=False)]
-        )
-
-        self.blocks[0].pre_hook_fx = self.input_quantizer
-
-        for i in range(1, n_layers+1):
-            #self.blocks[i].delay.max_delay = max_delay
-            #torch.nn.init.normal_(self.blocks[i].synapse.weight)
-            pass
+        if ternarization:
+            self.blocks = torch.nn.ModuleList([
+                slayer.block.sigma_delta.Input(sdnn_params),
+                TernaryConv(obs, sdnn_params, in_features=n_input, out_features=n_hidden, kernel_size=kernel_size, 
+                                            weight_norm=False, delay=False, delay_shift=False, padding=padding)] +
+                (n_layers - 1) * [TernaryConv(obs, sdnn_params, in_features=n_hidden, out_features=n_hidden,
+                                                            kernel_size=kernel_size, weight_norm=False, delay=False, delay_shift=False, padding=padding)] +
+                [slayer.block.sigma_delta.Output(sdnn_params, n_hidden, n_input, weight_norm=False)]
+            )
+        else:
+            self.blocks = torch.nn.ModuleList([
+                slayer.block.sigma_delta.Input(sdnn_params),
+                slayer.block.sigma_delta.Conv(sdnn_params, in_features=n_input, out_features=n_hidden, kernel_size=kernel_size, 
+                                            weight_norm=False, delay=False, delay_shift=False, padding=padding)] +
+                (n_layers - 1) * [slayer.block.sigma_delta.Conv(sdnn_params, in_features=n_hidden, out_features=n_hidden,
+                                                            kernel_size=kernel_size, weight_norm=False, delay=False, delay_shift=False, padding=padding)] +
+                [slayer.block.sigma_delta.Output(sdnn_params, n_hidden, n_input, weight_norm=False)]
+            )
             
-        #torch.nn.init.normal_(self.blocks[-1].synapse.weight)
-            
-        if batch_norm:
-            for i in range(n_layers+1, 1, -1):
-                self.blocks.insert(i, slayer.neuron.norm.MeanOnlyBatchNorm(num_features=n_hidden))
-                
+
+        self.blocks[0].pre_hook_fx = self.input_quantizer                
                 
         print("Created network:")
         print(self)    

@@ -12,20 +12,11 @@ from lava.lib.dl import slayer
 from utility.audio_dataloader import DNSAudio
 from utility.snr import si_snr
 from utility.dnsmos import DNSMOS
-from utility.torch_mdct import MDCT, InverseMDCT
 from utility.networks import Network, ConvNetwork
 from utility.quantization import *
-
-import os
-from time import time
-
 from utility.helpers import *
 
-
-import onnxruntime as ort
-
-print(ort.get_available_providers())
-
+import os
 
 class InferenceNet(Network):
     def forward(self, noisy):
@@ -90,7 +81,10 @@ if __name__ == "__main__":
     if 'n_fft' not in args.keys():
         args['n_fft'] = 512
         
-    device = torch.device('cuda:'+str(cur_args.gpu))
+    if torch.cuda.is_available():
+        device = torch.device('cuda:'+str(cur_args.gpu))
+    else:
+        device = torch.device('cpu')
     
     root = args['path']
     out_delay = args['out_delay']
@@ -180,7 +174,7 @@ if __name__ == "__main__":
     validation_set = DNSAudio(root=root + 'validation_set/')
     
     train_sampler = RandomSampler(train_set, replacement=False, num_samples=cur_args.train_size)
-    valid_sampler = RandomSampler(train_set, replacement=False, num_samples=cur_args.valid_size)
+    valid_sampler = RandomSampler(validation_set, replacement=False, num_samples=cur_args.valid_size)
 
     train_loader = DataLoader(train_set,
                             batch_size=32,
@@ -257,16 +251,25 @@ if __name__ == "__main__":
     net(noisy_abs)
     net.load_state_dict(torch.load(trained_folder + '/network.pt'))
     
+    num_params = 0
+    for name, param in net.named_parameters():
+        if "weight" in name:
+            num_params += np.prod(param.shape)
+    
+    print_stats(stats_file, "Number of parameters: %d" % num_params)
+    
     if binarization:
         for m in net.modules():
             if isinstance(m, DenseBinary):
                 m.synapse.binarize()
                 
                 
-    #for name, val in net.named_parameters():
-    #    if "weight" in name:
-    #        print(name, val.shape)
-        
+    neuronops = []
+    for block in net.blocks[:-1]:
+        neuronops.append(np.prod(block.neuron.shape))
+    
+    
+
     
     ############################
     ### IN-SAMPLE STATISTICS ###
