@@ -220,7 +220,7 @@ if __name__ == "__main__":
         phase_feature_indices = torch.from_numpy(np.round(np.linspace(0, n_fft // 2, n_phase_features)).astype(int)).to(device)
     n_input = n_fft // 2 + 1 + n_phase_features if transformation == "stft" else n_mfcc
     if n_hidden is None:
-        n_hidden = n_fft + 2*n_phase_features if transformation == "stft" else else int(n_mfcc * hidden_input_ratio)
+        n_hidden = n_fft + 2*n_phase_features if transformation == "stft" else int(n_mfcc * hidden_input_ratio)
 
     if arch == "baseline":
         net = InferenceNet(args['threshold'],
