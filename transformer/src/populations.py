@@ -1,4 +1,5 @@
 import numpy as np
+from pprint import pprint
 
 # using this baselinee as a kick_off point
 #  'conformer_lstm_1_1' : {
@@ -30,7 +31,7 @@ import numpy as np
 #                    }
 #  }
 
-### input vector ###
+### input vector ### only lower limits are hard
 # lr           = 0.01    [0.001, 0.1] 
 # n_fft        = 512     [32, 1024] 
 # frame_s      = 0.025   [0.02, 0.032] 
@@ -83,7 +84,6 @@ def abs_to_pop(abs):
 
 def fix_pop(population):
   sample_rate = 16000
-  np.clip(population, 0, 1, out=population)
 
   ranges = get_ranges()
 
@@ -138,7 +138,11 @@ def fix_pop(population):
                     kernel_size,
                     lstm_layers
                   ])
-    fixed.append(abs_to_pop(values_abs))
+    pop = abs_to_pop(values_abs)
+    
+    np.clip(pop, a_min=0, a_max=None, out=pop)
+
+    fixed.append(pop)
 
   population[:,:] = np.array(fixed)
 
@@ -216,29 +220,29 @@ def get_initial_pop():
   init_pop = abs_to_pop(init_abs)
   ret = np.array([
     init_pop, # baseline
-    replace_max(init_pop, 0), # lr_max
+    #replace_max(init_pop, 0), # lr_max
     replace_min(init_pop, 0), # lr_min
-    replace_max(init_pop, 1), # n_fft_max
+    #replace_max(init_pop, 1), # n_fft_max
     replace_min(init_pop, 1), # n_fft_min
-    replace_max(init_pop, 2), # frame_s_max
+    #replace_max(init_pop, 2), # frame_s_max
     replace_min(init_pop, 2), # frame_s_min
-    replace_max(init_pop, 3), # stride_s_max
+    #replace_max(init_pop, 3), # stride_s_max
     replace_min(init_pop, 3), # stride_s_min
-    replace_max(init_pop, 4), # mse_weight_max
+    #replace_max(init_pop, 4), # mse_weight_max
     replace_min(init_pop, 4), # mse_weight_min
-    replace_max(init_pop, 5), # snr_weight_max
+    #replace_max(init_pop, 5), # snr_weight_max
     replace_min(init_pop, 5), # snr_weight_min
-    replace_max(init_pop, 6), # d_model_max
+    #replace_max(init_pop, 6), # d_model_max
     replace_min(init_pop, 6), # d_model_min
-    replace_max(init_pop, 7), # heads_max
+    #replace_max(init_pop, 7), # heads_max
     replace_min(init_pop, 7), # heads_min
-    replace_max(init_pop, 8), # d_ff_max
+    #replace_max(init_pop, 8), # d_ff_max
     replace_min(init_pop, 8), # d_ff_min
-    replace_max(init_pop, 9), # num_layers_max
+    #replace_max(init_pop, 9), # num_layers_max
     replace_min(init_pop, 9), # num_layers_min
-    replace_max(init_pop, 10), # kernel_size_max
+    #replace_max(init_pop, 10), # kernel_size_max
     replace_min(init_pop, 10), # kernel_size_min
-    replace_max(init_pop, 11), # lstm_layers_max
+    #replace_max(init_pop, 11), # lstm_layers_max
     replace_min(init_pop, 11),  # lstm_layers_min
     replace_middle(init_pop, 0), # lr_middle
     replace_middle(init_pop, 1), # n_fft_middle
@@ -254,4 +258,8 @@ def get_initial_pop():
     replace_middle(init_pop, 11), # lstm_layers_middle
   ])
   fix_pop(ret)
+
+  print("Initial Population")
+  pprint(ret)
+
   return ret

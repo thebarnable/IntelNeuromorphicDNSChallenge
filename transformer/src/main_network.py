@@ -58,7 +58,7 @@ from conf_lstm_config import config
 
 #######################################################
 
-def execute(input_dict, tag, genetic=False):
+def execute(input_dict, tag, genetic=False, limit=1000):
 
   print("Starting DNS Transformer")
 
@@ -188,7 +188,7 @@ def execute(input_dict, tag, genetic=False):
 
 
   
-  avg_window_size = 200
+  avg_window_size = 100
   last_snrs = np.full(avg_window_size, -999, dtype=float)
   avg_index = 0
   avg_snr = None
@@ -318,9 +318,9 @@ def execute(input_dict, tag, genetic=False):
               saveAudio("/{}/e{}_i{}_train_output.wav".format(tag, epoch, i), output[0].detach(), toCPU=True)
           
           if genetic:
-            if i == 15000:
+            if i == limit:
               break
-            if i == 300 and avg_snr < -20:
+            if i == 300 and avg_snr < -10:
               print("Early quitting")
               break
         print("Total loss: ", total_loss/len(train_loader))
