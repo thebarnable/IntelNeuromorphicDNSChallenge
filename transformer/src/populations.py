@@ -1,5 +1,6 @@
 import numpy as np
 from pprint import pprint
+from custom_pop import custom_populations
 
 # using this baselinee as a kick_off point
 #  'conformer_lstm_1_1' : {
@@ -121,8 +122,12 @@ def fix_pop(population):
       print("FIXING: d_model must be even number")
       d_model -= 1
     # d_model must be divisible by heads (as d_model is even, at least 2 heads)
-    while d_model % heads != 0:
-      heads -= 1
+    if d_model % heads != 0:
+      print(d_model)
+      print(heads)
+      print("FIXING: heads must be dividor of d_model")
+      while d_model % heads != 0:
+        heads -= 1
 
     values_abs =  np.array([
                     lr,
@@ -168,7 +173,7 @@ def pop2dict(population): # population containing vector of ones and zeros
   ret = {
     "device" : "cuda",
     "network" : "scaling",
-    "epochs" : 2,
+    "epochs" : 1,
     "batch" : 2,
     "phase" : True,
     "optimizer" : "SGD",
@@ -212,7 +217,15 @@ def replace_middle(array, index):
   ret[index] = 0.5
   return ret
 
-def get_initial_pop():
+def get_initial_pop(pop_type="manual"):
+
+  if pop_type != "automatic":
+    custom = custom_populations[pop_type]
+    fix_pop(custom)
+    print("Initial Custom Population")
+    pprint(custom)
+    return custom
+
   
   initial = []
   init_abs = get_init_abs()

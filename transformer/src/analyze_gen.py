@@ -1,7 +1,12 @@
 import re
 import matplotlib.pyplot as plt
 
-with open("../genetic/run_genetic.out", "r") as file:
+#with open("../genetic/run_genetic_7500_custom_pop.out", "r") as file:
+#with open("../genetic/run_genetic_7500_custom_pop_p_3.out", "r") as file:
+#with open("../genetic/run_genetic_7500_manual.out", "r") as file:
+
+#with open("../genetic/custom_genetic_7500.out", "r") as file:
+with open("../genetic/custom_genetic_1000.out", "r") as file:
   file_content = file.read()
 
 # Use regex to find all avr_snr values
