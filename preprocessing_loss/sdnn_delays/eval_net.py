@@ -218,9 +218,9 @@ if __name__ == "__main__":
     if n_phase_features != 0:
         print("Using %d phase features" % n_phase_features)
         phase_feature_indices = torch.from_numpy(np.round(np.linspace(0, n_fft // 2, n_phase_features)).astype(int)).to(device)
-    n_input = n_fft // 2 + 1 + n_phase_features if transformation == "stft" else n_mfcc
+    n_input = n_fft // 2 + 1 + n_phase_features if transformation == "stft" else 256 if transformation == "mdct" else n_mfcc
     if n_hidden is None:
-        n_hidden = n_fft + 2*n_phase_features if transformation == "stft" else int(n_mfcc * hidden_input_ratio)
+        n_hidden = n_fft + 2*n_phase_features if transformation == "stft" else 512 if transformation == "mdct" else int(n_mfcc * hidden_input_ratio)
 
     if arch == "baseline":
         net = InferenceNet(args['threshold'],
@@ -528,7 +528,7 @@ if __name__ == "__main__":
     
     # Buffer latency    
     dt = hop_length / metadata['fs']
-    buffer_latency = dt
+    buffer_latency = win_length / metadata['fs']
     print_stats(stats_file, f'Buffer latency: {buffer_latency * 1000} ms')
     
     # ENC / DEC latency

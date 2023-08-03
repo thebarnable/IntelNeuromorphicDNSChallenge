@@ -1,13 +1,13 @@
 - MOS_bak: 3.64
   MOS_ovrl: 2.8
   MOS_sig: 3.22
-  PDP_proxy_Ops: 49091966.918
+  PDP_proxy_Ops: 194873605.872
   SI-SNR: 13.15
   SI-SNRi_data: 5.53
   SI-SNRi_enc+dec: 5.53
   date: '2023-07-27'
   latency_enc+dec_ms: 0.082
-  latency_total_ms: 8.082
+  latency_total_ms: 32.082
   model: Spiking Conv
   params: 2100224
   power_proxy_Ops/s: 6110784186.557

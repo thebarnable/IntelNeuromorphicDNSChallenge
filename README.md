@@ -1,34 +1,4 @@
 # Readme
-## Installation
-
-```
-cd <workspace>
-
-#conda (optional): conda create -n intel_dns Python=3.10.6 && conda activate intel_dns
-#venv (optional): python -m venv venv_intel_dns && source venv_intel_dns/bin/activate
-
-wget https://github.com/lava-nc/lava/releases/download/v0.7.0/lava_nc-0.7.0.tar.gz
-pip install lava_nc-0.7.0.tar.gz
-rm lava_nc-0.7.0.tar.gz
-
-wget https://github.com/lava-nc/lava-dl/releases/download/v0.3.3/lava_dl-0.3.3.tar.gz
-pip install lava_dl-0.3.3.tar.gz
-rm lava_dl-0.3.3.tar.gz
-
-git clone git@github.com:thebarnable/IntelNeuromorphicDNSChallenge.git
-cd IntelNeuromorphicDNSChallenge
-git submodule update --init
-
-pip install -r requirements.txt
-pip install tensorboard
-
-python -c "import os; from distutils.sysconfig import get_python_lib; open(get_python_lib() + os.sep + 'ndns.pth', 'a').write(os.getcwd())"
-
-# start training to check if everything works
-python baseline_solution/sdnn_delays/train_sdnn.py -path /mnt/data4tb/stadtmann/dns_challenge_4/datasets_fullband/ [-out /mnt/data4tb/stadtmann/dns_challenge_4/tensorboard_logs/<custom-log-dir>/]
-```
-
-## Introduction
 
 ## Installation
 
@@ -335,16 +305,16 @@ The evaluation metrics for participant solutions will be listed below and update
 
 Submitting to the metricsboard will help you meaure the progress of your solution against other participating teams. Earlier submissions are encouraged.
 
-To submit to the metricsboard, please create a ```.yml``` file with contents akin to the table below in the top level of the Github repository that you share with Intel so that we can import your metrics and update them on the public metricsboard. Please use [```example_metricsboard_writeout.py```](https://github.com/IntelLabs/IntelNeuromorphicDNSChallenge/blob/main/example_metricsboard_writeout.py) as an example for how to generate a valid ```.yml``` file with standard key names. For the Track 1 validation set, name the ```.yml``` file ```metricsboard_track_1_validation.yml```.
+To submit to the metricsboard, please create a ``.yml`` file with contents akin to the table below in the top level of the Github repository that you share with Intel so that we can import your metrics and update them on the public metricsboard. Please use [``example_metricsboard_writeout.py``](https://github.com/IntelLabs/IntelNeuromorphicDNSChallenge/blob/main/example_metricsboard_writeout.py) as an example for how to generate a valid ``.yml`` file with standard key names. For the Track 1 validation set, name the ``.yml`` file ``metricsboard_track_1_validation.yml``.
 
 **Track 1**
 
 |                Entry                | <sub>$\text{SI-SNR}$ <sup>(dB) | <sub>$\text{SI-SNRi}$ <sup>data (dB) | <sub>$\text{SI-SNRi}$ <sup>enc+dec (dB) | <sub>$\text{MOS}$ <sup>(ovrl) | <sub>$\text{MOS}$ <sup>(sig) | <sub>$\text{MOS}$ <sup>(bak) | <sub>$\text{latency}$ <sup>enc+dec (ms) | <sub>$\text{latency}$ <sup>total (ms) | <sub>$\text{Power}$ $\text{proxy}$ <sup>(M-Ops/s) | <sub>$\text{PDP}$ $\text{proxy}$ <sup>(M-Ops) | <sub>$\text{Params}$ <sup>($\times 10^3$) | <sub>$\text{Size}$ <sup>(KB) |
 | :---------------------------------: | ---------------------------------------: | ---------------------------------------------: | ------------------------------------------------: | --------------------------------------: | -------------------------------------: | -------------------------------------: | ------------------------------------------------: | ----------------------------------------------: | ------------------------------------------------------------: | --------------------------------------------------------: | ----------------------------------------------------: | -------------------------------------: |
-|   NoiCE Spiking Conv (07/27/2023)   |                                    13.15 |                                           5.53 |                                              5.53 |                                     2.8 |                                   3.22 |                                   3.64 |                                             0.082 |                                           8.082 |                                                      6,110.78 |                                                     49.09 |                                                 2,100 |                                  8,209 |
+|   NoiCE Spiking Conv (07/27/2023)   |                                    13.15 |                                           5.53 |                                              5.53 |                                     2.8 |                                   3.22 |                                   3.64 |                                             0.082 |                                          32.082 |                                                      6,110.78 |                                                    194.87 |                                                 2,100 |                                  8,209 |
 |    Microsoft NsNet2 (02/20/2023)    |                                    11.89 |                                           4.26 |                                              4.26 |                                    2.95 |                                   3.27 |                                   3.94 |                                             0.024 |                                          20.024 |                                                        136.13 |                                                      2.72 |                                                 2,681 |                                 10,500 |
-| Intel proprietary DNS (02/28/2023) |                                    12.71 |                                           5.09 |                                              5.09 |                                    3.09 |                                   3.35 |                                   4.08 |                                             0.036 |                                           8.036 |                                                             - |                                                         - |                                                 1,901 |                                  3,802 |
-| Baseline SDNN solution (02/20/2023) |                                    12.50 |                                           4.88 |                                              4.88 |                                    2.71 |                                   3.21 |                                   3.46 |                                             0.036 |                                           8.036 |                                                         11.59 |                                                      0.09 |                                                   525 |                                    465 |
+| Intel proprietary DNS (02/28/2023) |                                    12.71 |                                           5.09 |                                              5.09 |                                    3.09 |                                   3.35 |                                   4.08 |                                             0.030 |                                          32.030 |                                                             - |                                                         - |                                                 1,901 |                                  3,802 |
+| Baseline SDNN solution (02/20/2023) |                                    12.50 |                                           4.88 |                                              4.88 |                                    2.71 |                                   3.21 |                                   3.46 |                                             0.030 |                                          32.030 |                                                         14.54 |                                                      0.46 |                                                   525 |                                    465 |
 |           Validation set           |                                     7.62 |                                              - |                                                 - |                                    2.45 |                                   3.19 |                                   2.72 |                                                 - |                                               - |                                                             - |                                                         - |                                                     - |                                      - |
 
 **Track 2**
