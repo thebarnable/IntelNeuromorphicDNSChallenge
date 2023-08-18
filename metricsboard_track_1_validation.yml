@@ -13,3 +13,4 @@
   power_proxy_Ops/s: 6110784186.557
   size_kilobytes: 8209
   team: NoiCE
+  model_path: './Trainedconv_lr=0.001_multistep2/network.pt'
