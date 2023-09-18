@@ -280,7 +280,7 @@ if __name__ == "__main__":
         train_event_counts = []
 
         t_st = datetime.now()
-        for i, (noisy, clean, noise) in enumerate(validation_loader):
+        for i, (noisy, clean, noise) in enumerate(train_loader):
             net.eval()
             with torch.no_grad():
                 noisy = noisy.to(device)
