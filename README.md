@@ -1,5 +1,11 @@
 # Readme
 
+## Reproduce submitted results
+
+* Training: `cd preprocessing_loss/sdnn_delays && python train_sdnn.py -path <path>  -lr 0.001 -architecture conv -epoch 50 -lr_scheduler multistep2 -mse_loss_type mfcc`
+* Inference: `cd preprocessing_loss/sdnn_delays && python eval_net.py -exp conv_lr=0.001_multistep2`
+* Lava inference: run Jupyter notebook: `preprocessing_loss/sdnn_delays/lava_inference.ipynb`
+
 ## Installation
 
 ```
