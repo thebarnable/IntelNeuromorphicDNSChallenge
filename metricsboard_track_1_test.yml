@@ -1,0 +1,16 @@
+- MOS_bak: 3.64
+  MOS_ovrl: 2.79
+  MOS_sig: 3.22
+  PDP_proxy_Ops: 195867903.029
+  SI-SNR: 12.96
+  SI-SNRi_data: 5.60
+  SI-SNRi_enc+dec: 5.60
+  date: '2023-09-18'
+  latency_enc+dec_ms: 0.053
+  latency_total_ms: 32.053
+  model: Spiking Conv
+  params: 2100224
+  power_proxy_Ops/s: 6110757329.544
+  size_kilobytes: 8209
+  team: NoiCE
+  model_path: './Trainedconv_lr=0.001_multistep2/network.pt'
